@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Round-trip test: offload to S3, ensure fetch back.
+# Requires a dedicated throwaway bucket — set AWS_TEST_BUCKET explicitly.
 set -euo pipefail
 
-BUCKET="${AWS_TEST_BUCKET:-brain-downloads-731049002088}"
+BUCKET="${AWS_TEST_BUCKET:?Set AWS_TEST_BUCKET to a dedicated test bucket (not production)}"
 REGION="${AWS_TEST_REGION:-us-east-1}"
 PREFIX="${AWS_TEST_PREFIX:-cloud-vfs-test}"
 ROOT="$(mktemp -d)"
