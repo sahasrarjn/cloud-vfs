@@ -10,7 +10,7 @@ Works with **Cursor / Claude agents** or plain shell + [Azure CLI](https://learn
 
 - **Lazy fetch** — `cloud-vfs ensure <path>` downloads when a stub or missing file is needed
 - **Manual offload** — `cloud-vfs offload --dry-run` then explicit `offload <paths>`
-- **Optional dual accounts** — one local archive, optional second remote account (not synced)
+- **Multi-cloud** — Azure Blob and AWS S3 (`LOCAL_PROVIDER` / `REMOTE_PROVIDER` or per-entry `provider`)
 - **Manifest catalog** — `.cloud-vfs/manifest.json` maps paths ↔ blobs ↔ status
 - **Cursor skill** — `cloud-vfs init --skill` installs agent guidance
 
@@ -68,11 +68,17 @@ your-project/
   .cursor/skills/cloud-vfs/   # optional
 ```
 
-## One or two storage accounts
+## One or two archives (Azure and/or AWS)
 
-**One account** — set the same values for `AZ_LOCAL_*` and `AZ_REMOTE_*` in `config.env`.
+Set `LOCAL_PROVIDER=azure` or `aws` in `.cloud-vfs/config.env`.
 
-**Two accounts** — use `local_archive` vs `remote_staging` in manifest entries when offloading or fetching (e.g. data near you vs near cloud compute). They are **not** synced automatically.
+**Azure:** `AZ_LOCAL_*`, `AZ_REMOTE_*` + keys in `secrets.env`
+
+**AWS:** `AWS_LOCAL_BUCKET`, `AWS_LOCAL_REGION` (uses `aws` CLI credentials — no keys in secrets.env)
+
+Per manifest entry you can override with `"provider": "aws"` on the entry or archive block.
+
+Use the same bucket/account for both archives if you only want one backend.
 
 ## Environment variables
 

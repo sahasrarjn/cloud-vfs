@@ -44,7 +44,9 @@ cloud-vfs-setup
 | Preview offload | `cloud-vfs offload --dry-run` |
 | Offload | `cloud-vfs offload <path>...` |
 
-Archive values in manifest: `local_archive` or `remote_staging`.
+Archive values: `local_archive` or `remote_staging`. Provider: `azure` or `aws` (config or per-entry `"provider": "aws"`).
+
+**AWS config:** `LOCAL_PROVIDER=aws`, `AWS_LOCAL_BUCKET`, `AWS_LOCAL_REGION` — uses `aws` CLI credentials.
 
 ## Agent rules
 

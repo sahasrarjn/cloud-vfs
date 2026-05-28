@@ -10,8 +10,8 @@ from typing import Any
 from cloud_vfs import __version__
 from cloud_vfs.project import fetch_cmd, manifest_path, package_path, project_root
 from cloud_vfs.scaffold import cmd_init
-from cloud_vfs.storage.env import archive_credentials, load_azure_env, normalize_archive
-from cloud_vfs.storage.fetch import fetch_path, upload_path
+from cloud_vfs.storage.env import load_cloud_env, normalize_archive
+from cloud_vfs.storage.fetch import fetch_path, manifest_with_provider, resolve_archive, upload_path
 from cloud_vfs.storage.manifest import (
     find_entry,
     load_manifest,
@@ -57,14 +57,17 @@ def cmd_ensure(paths: list[str]) -> int:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
         archive = meta.get("archive", "local_archive")
-        print(f"fetch: {rel} ({archive})")
+        env = load_cloud_env()
+        prov = meta.get("provider") or (entry or {}).get("provider")
+        mcfg = manifest_with_provider(manifest, archive, prov)
         try:
-            archive_credentials(load_azure_env(), archive)
+            cfg = resolve_archive(env, mcfg, archive)
         except (KeyError, ValueError) as exc:
-            print(f"ERROR: missing Azure config/secrets: {exc}", file=sys.stderr)
+            print(f"ERROR: missing cloud config: {exc}", file=sys.stderr)
             return 1
-        nbytes = fetch_path(meta, rel)
+        print(f"fetch: {rel} ({cfg.provider}/{archive})")
         remove_stub(rel)
+        nbytes = fetch_path(meta, rel, archive, env, mcfg)
         if entry:
             mark_fetched(entry)
             changed = True
@@ -90,23 +93,33 @@ def cmd_resolve(path: str) -> int:
     if entry:
         out["entry"] = {
             k: entry.get(k)
-            for k in ("id", "archive", "status", "blob", "blob_prefix", "uploaded")
+            for k in ("id", "archive", "provider", "status", "blob", "blob_prefix", "uploaded")
             if entry.get(k) is not None
         }
     if stub:
         out["stub"] = stub
     if not local_present:
         out["fetch_cmd"] = fetch_cmd(rel)
-        archive = (stub or {}).get("archive") or (entry or {}).get("archive")
-        if archive:
-            block = manifest.get(archive, {})
+        archive = (stub or {}).get("archive") or (entry or {}).get("archive") or "local_archive"
+        env = load_cloud_env()
+        try:
+            cfg = resolve_archive(env, manifest, archive)
             blob = (stub or {}).get("blob") or (entry or {}).get("blob")
             prefix = (stub or {}).get("blob_prefix") or (entry or {}).get("blob_prefix")
-            base = block.get("base_url", "")
-            if blob:
-                out["blob_url"] = f"{base}/{blob}".replace("//", "/").replace(":/", "://")
-            elif prefix:
-                out["blob_prefix_url"] = f"{base}/{prefix}".replace("//", "/").replace(":/", "://")
+            out["provider"] = cfg.provider
+            if cfg.provider == "aws":
+                if blob:
+                    out["s3_url"] = f"s3://{cfg.bucket}/{blob}"
+                elif prefix:
+                    out["s3_prefix_url"] = f"s3://{cfg.bucket}/{prefix.rstrip('/')}/"
+            else:
+                base = (manifest.get(archive) or {}).get("base_url") or cfg.base_url
+                if blob:
+                    out["blob_url"] = f"{base}/{blob}".replace("//", "/").replace(":/", "://")
+                elif prefix:
+                    out["blob_prefix_url"] = f"{base}/{prefix}".replace("//", "/").replace(":/", "://")
+        except (KeyError, ValueError):
+            pass
     print(json.dumps(out, indent=2))
     return 0
 
@@ -188,15 +201,25 @@ def cmd_offload(
         use_archive = normalize_archive(
             archive_override or (entry or {}).get("archive", "local_archive")
         )
+        prov = (entry or {}).get("provider")
+        mcfg = manifest_with_provider(manifest, use_archive, prov)
+        env = load_cloud_env()
+        try:
+            cfg = resolve_archive(env, mcfg, use_archive)
+        except (KeyError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
         size = tree_size(abs_path(rel))
         if dry_run:
-            print(f"  would offload: {rel}  {fmt_bytes(size)}  -> {use_archive}")
+            print(f"  would offload: {rel}  {fmt_bytes(size)}  -> {cfg.provider}/{use_archive}")
             continue
-        print(f"offload: {rel} -> {use_archive}")
-        upload_path(rel, archive=use_archive)
+        blob_prefix = (entry.get("blob_prefix") if entry else None) or f"{rel.rstrip('/')}/"
+        print(f"offload: {rel} -> {cfg.provider}/{use_archive}")
+        upload_path(rel, use_archive, env, mcfg, blob_prefix=blob_prefix)
         meta: dict[str, Any] = {
             "manifest_id": entry.get("id") if entry else None,
             "archive": use_archive,
+            "provider": cfg.provider,
         }
         if entry:
             if entry.get("blob"):
