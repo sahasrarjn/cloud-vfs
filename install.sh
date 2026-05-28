@@ -25,7 +25,7 @@ Installed:
   cloud-vfs --help
   cloud-vfs-setup
 
-Quick start in your ML project:
+Quick start in your project:
   cloud-vfs init --skill
   cloud-vfs-setup
 

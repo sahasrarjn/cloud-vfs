@@ -44,8 +44,8 @@ def cmd_init(project: Path, *, install_skill: bool) -> int:
         print(f"wrote: {gitignore}")
 
     if install_skill:
-        skill_src = package_path("skills", "azure-blob-storage")
-        skill_dest = project / ".cursor" / "skills" / "azure-blob-storage"
+        skill_src = package_path("skills", "cloud-vfs")
+        skill_dest = project / ".cursor" / "skills" / "cloud-vfs"
         skill_dest.parent.mkdir(parents=True, exist_ok=True)
         if skill_dest.exists():
             print(f"keep existing skill: {skill_dest}")

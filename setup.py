@@ -7,11 +7,11 @@ readme = Path("README.md").read_text(encoding="utf-8")
 
 setup(
     name="cloud-vfs",
-    version="0.1.0",
-    description="Manual Azure blob virtual filesystem for ML repos",
+    version="0.1.1",
+    description="Manual Azure blob virtual filesystem",
     long_description=readme,
     long_description_content_type="text/markdown",
-    author="Sahasra",
+    author="cloud-vfs contributors",
     url="https://github.com/sahasrarjn/cloud-vfs",
     license="MIT",
     packages=find_packages(),

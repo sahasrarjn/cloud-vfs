@@ -1,17 +1,16 @@
 # cloud-vfs
 
-Manual **Azure Blob virtual filesystem** for ML repos. Keep your laptop lean: large artifacts live in cloud storage, local disk keeps tiny `.cloudstub` JSON pointers, and you stay in full control with dry-run offload.
+Manual **Azure Blob virtual filesystem** for any project with large files. Keep your machine lean: artifacts live in cloud storage, local disk keeps tiny `.cloudstub` JSON pointers, and you stay in full control with dry-run offload.
 
-Built for **Cursor / Claude agents** and humans who use bash + Azure CLI.
+Works with **Cursor / Claude agents** or plain shell + [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli).
 
-[![PyPI version](https://img.shields.io/pypi/v/cloud-vfs)](https://pypi.org/project/cloud-vfs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ## Features
 
-- **Lazy fetch** — `cloud-vfs ensure <path>` downloads from Azure when a stub or missing file is accessed
+- **Lazy fetch** — `cloud-vfs ensure <path>` downloads when a stub or missing file is needed
 - **Manual offload** — `cloud-vfs offload --dry-run` then explicit `offload <paths>`
-- **Dual blob accounts** — local archive (near you) + cloud staging (near GPU); not synced
+- **Optional dual accounts** — one local archive, optional second remote account (not synced)
 - **Manifest catalog** — `.cloud-vfs/manifest.json` maps paths ↔ blobs ↔ status
 - **Cursor skill** — `cloud-vfs init --skill` installs agent guidance
 
@@ -19,53 +18,29 @@ No auto-tracking, no cron, no background jobs.
 
 ## Install
 
-### pip (recommended)
-
 ```bash
 pip install git+https://github.com/sahasrarjn/cloud-vfs.git
-# or after PyPI publish:
-# pip install cloud-vfs
 ```
 
-### install script
+Or:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sahasrarjn/cloud-vfs/main/install.sh | bash
 ```
 
-### from source
-
-```bash
-git clone https://github.com/sahasrarjn/cloud-vfs.git
-cd cloud-vfs
-pip install -e .
-```
-
-Requires **Python 3.10+** and **[Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli)** (`az login`).
+Requires **Python 3.9+** and `az login`.
 
 ## Quick start
 
 ```bash
-cd your-ml-project
-
-# 1. Scaffold config + manifest (+ optional Cursor skill)
+cd your-project
 cloud-vfs init --skill
-
-# 2. Interactive Azure setup (regions, account names, optional provision)
 cloud-vfs-setup
-# or: bash $(python3 -c "import cloud_vfs.project as p; print(p.package_path('scripts/setup-blob-storage.sh'))")
-
-# 3. Edit .cloud-vfs/manifest.json — register your data paths
-
-# 4. Inspect and dry-run offload
+# edit .cloud-vfs/manifest.json
 cloud-vfs status
 cloud-vfs offload --dry-run
-
-# 5. Offload only what you choose
-cloud-vfs offload data/generated/my_old_run
-
-# 6. Fetch back when needed
-cloud-vfs ensure data/generated/my_old_run
+cloud-vfs offload data/large_folder    # only after you choose
+cloud-vfs ensure data/large_folder     # fetch when needed
 ```
 
 ## Commands
@@ -78,22 +53,26 @@ cloud-vfs ensure data/generated/my_old_run
 | `cloud-vfs status` | Local vs stub + sizes |
 | `cloud-vfs offload --dry-run` | Preview offload candidates |
 | `cloud-vfs offload <paths>` | Upload + stub + remove local |
-| `cloud-vfs materialize-stubs` | Write stubs for existing offloaded entries |
+| `cloud-vfs materialize-stubs` | Write stubs for offloaded entries |
 
 ## Project layout
 
 ```
 your-project/
   .cloud-vfs/
-    config.env          # Azure account names (commit)
-    secrets.env         # Storage keys (gitignored)
-    manifest.json       # Path catalog (commit)
+    config.env       # account names (commit)
+    secrets.env      # keys (gitignored)
+    manifest.json    # path catalog (commit)
   data/
-    my_run/.cloudstub   # Tiny pointer when offloaded
-  .cursor/skills/azure-blob-storage/   # optional, from init --skill
+    big/.cloudstub   # pointer when offloaded
+  .cursor/skills/cloud-vfs/   # optional
 ```
 
-Legacy compat: also reads `runpod/config.env`, `runpod/secrets.env`, and `infra/blob-manifest.json`.
+## One or two storage accounts
+
+**One account** — set the same values for `AZ_LOCAL_*` and `AZ_REMOTE_*` in `config.env`.
+
+**Two accounts** — use `local_archive` vs `remote_staging` in manifest entries when offloading or fetching (e.g. data near you vs near cloud compute). They are **not** synced automatically.
 
 ## Environment variables
 
@@ -104,42 +83,18 @@ Legacy compat: also reads `runpod/config.env`, `runpod/secrets.env`, and `infra/
 | `CLOUD_VFS_SECRETS` | Path to secrets.env |
 | `CLOUD_VFS_MANIFEST` | Path to manifest.json |
 
-## Agent integration
-
-Before reading cloud-only paths:
+## Agents
 
 ```bash
-cloud-vfs ensure data/my_dataset
+cloud-vfs ensure path/to/file
+cloud-vfs offload --dry-run path/to/file   # confirm with user first
+cloud-vfs offload path/to/file
 ```
-
-Before offloading — always dry-run and confirm:
-
-```bash
-cloud-vfs offload --dry-run data/my_dataset
-cloud-vfs offload data/my_dataset
-```
-
-Install the bundled skill with `cloud-vfs init --skill` or copy from `cloud_vfs/bundled/skills/azure-blob-storage/`.
-
-## Why two blob accounts?
-
-| | Local archive | Cloud staging |
-|---|---------------|---------------|
-| Region | Near your machine | Near GPU / cloud VM |
-| Use | Long-term offload, manifest catalog | Active experiment sync |
-| Synced? | **No** | **No** |
-
-Use the same account for both by duplicating values in `config.env` if you prefer simplicity.
 
 ## Documentation
 
-- [docs/CLOUD_VFS.md](docs/CLOUD_VFS.md) — workflow reference
-- [skills/azure-blob-storage/README.md](cloud_vfs/bundled/skills/azure-blob-storage/README.md) — adoption guide
+- [docs/CLOUD_VFS.md](docs/CLOUD_VFS.md)
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-## Author
-
-[Sahasra](https://github.com/sahasrarjn)

@@ -10,7 +10,7 @@ from typing import Any
 from cloud_vfs import __version__
 from cloud_vfs.project import fetch_cmd, manifest_path, package_path, project_root
 from cloud_vfs.scaffold import cmd_init
-from cloud_vfs.storage.env import archive_credentials, load_azure_env
+from cloud_vfs.storage.env import archive_credentials, load_azure_env, normalize_archive
 from cloud_vfs.storage.fetch import fetch_path, upload_path
 from cloud_vfs.storage.manifest import (
     find_entry,
@@ -185,7 +185,9 @@ def cmd_offload(
             print(f"SKIP (not local): {rel}")
             continue
         entry = find_entry(manifest, rel)
-        use_archive = archive_override or (entry or {}).get("archive", "local_archive")
+        use_archive = normalize_archive(
+            archive_override or (entry or {}).get("archive", "local_archive")
+        )
         size = tree_size(abs_path(rel))
         if dry_run:
             print(f"  would offload: {rel}  {fmt_bytes(size)}  -> {use_archive}")
@@ -242,7 +244,7 @@ def cmd_materialize_stubs() -> int:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="cloud-vfs",
-        description="Manual Azure blob virtual filesystem for ML repos",
+        description="Manual Azure blob virtual filesystem",
     )
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -263,7 +265,11 @@ def main(argv: list[str] | None = None) -> int:
     p_offload = sub.add_parser("offload", help="Upload + stub (explicit paths; use --dry-run first)")
     p_offload.add_argument("paths", nargs="*")
     p_offload.add_argument("--dry-run", action="store_true")
-    p_offload.add_argument("--archive", choices=["local_archive", "runpod_staging"])
+    p_offload.add_argument(
+        "--archive",
+        choices=["local_archive", "remote_staging", "runpod_staging"],
+        help="runpod_staging is a legacy alias for remote_staging",
+    )
 
     sub.add_parser("materialize-stubs", help="Write .cloudstub for offloaded manifest entries")
 
@@ -277,7 +283,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "status":
         return cmd_status(args.json)
     if args.cmd == "offload":
-        return cmd_offload(args.paths, dry_run=args.dry_run, archive_override=args.archive)
+        return cmd_offload(
+            args.paths,
+            dry_run=args.dry_run,
+            archive_override=normalize_archive(args.archive) if args.archive else None,
+        )
     if args.cmd == "materialize-stubs":
         return cmd_materialize_stubs()
     return 1

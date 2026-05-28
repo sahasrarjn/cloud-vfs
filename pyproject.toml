@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cloud-vfs"
-version = "0.1.0"
-description = "Manual Azure blob virtual filesystem for ML repos — lazy fetch, dry-run offload, Cursor skill"
+version = "0.1.1"
+description = "Manual Azure blob virtual filesystem — lazy fetch, dry-run offload, Cursor skill"
 readme = "README.md"
 license = { text = "MIT" }
-authors = [{ name = "Sahasra", email = "sahasrarjn@users.noreply.github.com" }]
+authors = [{ name = "cloud-vfs contributors" }]
 requires-python = ">=3.9"
 keywords = ["azure", "blob", "ml", "storage", "cursor", "agents"]
 classifiers = [

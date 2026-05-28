@@ -1,49 +1,47 @@
 {
   "version": 2,
   "updated": "YYYY-MM-DD",
-  "architecture": "dual-blob — local archive and cloud staging are NOT synced",
+  "architecture": "Optional dual-blob — local archive and remote staging are independent (not synced)",
   "local_archive": {
-    "role": "Mac storage hygiene — offload, pull_blob, manifest catalog",
+    "role": "Long-term storage near the developer machine",
     "account": "YOUR_LOCAL_ACCOUNT",
-    "container": "esp-cl-data",
+    "container": "data",
     "region": "YOUR_LOCAL_REGION",
     "resource_group": "YOUR_LOCAL_RG",
-    "base_url": "https://YOUR_LOCAL_ACCOUNT.blob.core.windows.net/esp-cl-data",
-    "scripts": {
-      "upload_paths": "infra/offload_paths.sh",
-      "download_one": "infra/pull_blob.sh"
+    "base_url": "https://YOUR_LOCAL_ACCOUNT.blob.core.windows.net/data",
+    "commands": {
+      "offload": "cloud-vfs offload <path>",
+      "fetch": "cloud-vfs ensure <path>"
     }
   },
-  "runpod_staging": {
-    "role": "Active cloud runs — stage-azure, sync-pull, sync-push",
-    "account": "YOUR_RUNPOD_ACCOUNT",
-    "container": "esp-cl-data",
-    "region": "YOUR_RUNPOD_REGION",
-    "resource_group": "YOUR_RUNPOD_RG",
-    "base_url": "https://YOUR_RUNPOD_ACCOUNT.blob.core.windows.net/esp-cl-data",
-    "scripts": {
-      "upload_active_run": "runpod/stage-azure.sh",
-      "pull_gpu": "runpod/sync-pull.sh",
-      "push_checkpoints": "runpod/sync-push.sh"
+  "remote_staging": {
+    "role": "Optional second account near cloud compute (same or different region)",
+    "account": "YOUR_REMOTE_ACCOUNT",
+    "container": "data",
+    "region": "YOUR_REMOTE_REGION",
+    "resource_group": "YOUR_REMOTE_RG",
+    "base_url": "https://YOUR_REMOTE_ACCOUNT.blob.core.windows.net/data",
+    "commands": {
+      "offload": "cloud-vfs offload --archive remote_staging <path>",
+      "fetch": "cloud-vfs ensure <path>"
     }
   },
-  "lifecycle": "local: download → use → offload → delete local | cloud: stage → sync-pull → run → sync-push",
+  "lifecycle": "ensure when needed → work locally → offload --dry-run → offload chosen paths",
   "entries": [
     {
-      "id": "example-offload",
-      "local": "data/generated/my_experiment",
-      "blob_prefix": "data/generated/my_experiment/",
+      "id": "example-dataset",
+      "local": "data/my_dataset",
+      "blob_prefix": "data/my_dataset/",
       "archive": "local_archive",
       "status": "offload-candidate",
-      "notes": "Safe to remove locally after upload + manifest update"
+      "notes": "Example path — edit or remove"
     },
     {
-      "id": "example-required",
-      "local": "data/model_weights/my_checkpoint.pth",
-      "blob": "data/model_weights/my_checkpoint.pth",
-      "archive": "runpod_staging",
-      "status": "required-local",
-      "notes": "Keep local while experiment line is active"
+      "id": "example-file",
+      "local": "artifacts/model.bin",
+      "blob": "artifacts/model.bin",
+      "archive": "local_archive",
+      "status": "synced"
     }
   ]
 }

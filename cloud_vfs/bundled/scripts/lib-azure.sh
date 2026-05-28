@@ -2,14 +2,14 @@
 # Shared Azure helpers for cloud-vfs scripts.
 set -euo pipefail
 
-find_project_root() {
+_find() {
   local dir="$PWD"
   if [ -n "${CLOUD_VFS_PROJECT_ROOT:-}" ]; then
     echo "$CLOUD_VFS_PROJECT_ROOT"
     return
   fi
   while [ "$dir" != "/" ]; do
-    if [ -d "$dir/.cloud-vfs" ] || [ -f "$dir/infra/blob-manifest.json" ]; then
+    if [ -d "$dir/.cloud-vfs" ]; then
       echo "$dir"
       return
     fi
@@ -24,14 +24,8 @@ config_file() {
     return
   fi
   local root
-  root="$(find_project_root)"
-  if [ -f "$root/.cloud-vfs/config.env" ]; then
-    echo "$root/.cloud-vfs/config.env"
-  elif [ -f "$root/runpod/config.env" ]; then
-    echo "$root/runpod/config.env"
-  else
-    echo "$root/.cloud-vfs/config.env"
-  fi
+  root="$(_find)"
+  echo "$root/.cloud-vfs/config.env"
 }
 
 secrets_file() {
@@ -39,16 +33,9 @@ secrets_file() {
     echo "$CLOUD_VFS_SECRETS"
     return
   fi
-  local root cfg
-  root="$(find_project_root)"
-  cfg="$(config_file)"
-  if [ -f "$root/.cloud-vfs/secrets.env" ]; then
-    echo "$root/.cloud-vfs/secrets.env"
-  elif [ -f "$root/runpod/secrets.env" ]; then
-    echo "$root/runpod/secrets.env"
-  else
-    echo "$root/.cloud-vfs/secrets.env"
-  fi
+  local root
+  root="$(_find)"
+  echo "$root/.cloud-vfs/secrets.env"
 }
 
 load_cloud_vfs_config() {
@@ -59,10 +46,19 @@ load_cloud_vfs_config() {
   [ -f "$cfg" ] && source "$cfg"
   # shellcheck disable=SC1090
   [ -f "$sec" ] && source "$sec"
+  # Legacy env var names (still read if present in config/secrets)
+  : "${AZ_REMOTE_STORAGE_ACCOUNT:=${AZ_RUNPOD_STORAGE_ACCOUNT:-}}"
+  : "${AZ_REMOTE_STORAGE_KEY:=${AZ_RUNPOD_STORAGE_KEY:-}}"
+  : "${AZ_REMOTE_CONTAINER:=${AZ_RUNPOD_CONTAINER:-}}"
+  : "${AZ_REMOTE_RG:=${AZ_RUNPOD_RG:-}}"
+  : "${AZ_REMOTE_LOC:=${AZ_RUNPOD_LOC:-}}"
 }
 
 require_az() {
-  command -v az >/dev/null || { echo "Install Azure CLI: https://learn.microsoft.com/cli/azure/install-azure-cli" >&2; exit 1; }
+  command -v az >/dev/null || {
+    echo "Install Azure CLI: https://learn.microsoft.com/cli/azure/install-azure-cli" >&2
+    exit 1
+  }
   az account show >/dev/null || { echo "Run: az login" >&2; exit 1; }
 }
 
@@ -74,8 +70,8 @@ az_local_blob_url() {
   echo "https://${AZ_LOCAL_STORAGE_ACCOUNT}.blob.core.windows.net/${AZ_LOCAL_CONTAINER}"
 }
 
-az_runpod_blob_url() {
-  echo "https://${AZ_RUNPOD_STORAGE_ACCOUNT}.blob.core.windows.net/${AZ_RUNPOD_CONTAINER}"
+az_remote_blob_url() {
+  echo "https://${AZ_REMOTE_STORAGE_ACCOUNT}.blob.core.windows.net/${AZ_REMOTE_CONTAINER}"
 }
 
 provision_storage_account() {
