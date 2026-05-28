@@ -47,4 +47,6 @@ test -f data/demo/.cloudstub || test -f data/demo.cloudstub || ls -la data/demo/
 echo "==> ensure"
 cloud-vfs ensure data/demo
 grep -q "cloud-vfs aws test" data/demo/hello.txt
-echo "OK: AWS round-trip passed (s3://$BUCKET/$PREFIX/demo/)"
+echo "==> cleanup s3://$BUCKET/$PREFIX/"
+aws s3 rm "s3://$BUCKET/$PREFIX/" --recursive --only-show-errors
+echo "OK: AWS round-trip passed (test objects removed from S3)"
