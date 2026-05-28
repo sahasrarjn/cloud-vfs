@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cloud-vfs"
-version = "0.2.0"
-description = "Manual Azure blob virtual filesystem — lazy fetch, dry-run offload, Cursor skill"
+version = "0.3.0"
+description = "Cloud blob virtual filesystem — per-file inventory, lazy fetch, dry-run offload, Cursor skill"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "cloud-vfs contributors" }]

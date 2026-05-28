@@ -1,69 +1,55 @@
 ---
 name: cloud-vfs
 description: >-
-  Operate cloud-vfs: Azure Blob-backed paths with manual lazy fetch and dry-run
-  offload. Use when configuring .cloud-vfs/, fetching cloud-only files, or
-  offloading large project data.
+  Operate cloud-vfs: cloud blob paths with per-file inventory, lazy fetch,
+  reconcile drift, and dry-run offload. Use when configuring .cloud-vfs/, fetching
+  cloud-only files, registering large outputs, or offloading project data.
 ---
 
 # cloud-vfs
 
 Install: `pip install git+https://github.com/sahasrarjn/cloud-vfs.git`
 
-Keep large project files in Azure Blob. Local disk holds tiny `.cloudstub` pointers until you `cloud-vfs ensure` a path.
+Large files live in cloud storage. Local disk holds `.cloudstub` pointers and a **per-file inventory** under `.cloud-vfs/index/`.
 
-## First-time setup — ask the user
+## Two layers
 
-1. Azure region(s) and storage account name(s)
-2. One account or two (local archive + optional remote staging)
-3. Which project paths belong in the manifest
+| Layer | File | Who edits |
+|-------|------|-----------|
+| Policy | `.cloud-vfs/manifest.json`, `inventory-policy.json` | Human/agent |
+| Inventory | `.cloud-vfs/index/<root>.json` | **Tools only** |
 
-Then:
+## Tracking scope
 
-```bash
-cloud-vfs init --skill
-cloud-vfs-setup
-# edit .cloud-vfs/manifest.json
-```
-
-## Config
-
-| File | Commit? |
-|------|---------|
-| `.cloud-vfs/config.env` | Yes |
-| `.cloud-vfs/secrets.env` | **Never** |
-| `.cloud-vfs/manifest.json` | Yes |
-
-## Commands
+Large **`data/` artifacts only** (default ≥ 50 MB). Code excluded — see `inventory-policy.json`.
 
 | Task | Command |
 |------|---------|
-| Fetch | `cloud-vfs ensure <path>` |
-| Inspect | `cloud-vfs resolve <path>` |
-| Inventory | `cloud-vfs status` |
+| Index new local files | `cloud-vfs register <path>` |
+| Fetch (file or tree) | `cloud-vfs ensure <path>` |
+| Inspect blob path | `cloud-vfs resolve <path>` |
+| Status + drift | `cloud-vfs status --drift` |
+| Audit | `cloud-vfs reconcile` |
+| Drop sub-threshold rows | `cloud-vfs prune` |
+| Rebuild ephemeral index | `cloud-vfs reconcile --from-blob --fix-index --prefix data/generated/` |
 | Preview offload | `cloud-vfs offload --dry-run` |
 | Offload | `cloud-vfs offload <path>...` |
 
-Archive values: `local_archive` or `remote_staging`. Provider: `azure` or `aws` (config or per-entry `"provider": "aws"`).
-
-**AWS config:** `LOCAL_PROVIDER=aws`, `AWS_LOCAL_BUCKET`, `AWS_LOCAL_REGION` — uses `aws` CLI credentials.
-
 ## Agent rules
 
-1. Before reading a cloud-only path: `cloud-vfs ensure <path>`
-2. Before offloading: **always** `cloud-vfs offload --dry-run` and get user confirmation
-3. Never offload without explicit approval after dry-run
+1. Before reading cloud-only paths: `ensure <path>`
+2. After creating outputs ≥ min size: `register <path>`
+3. Before offloading: **always** `offload --dry-run` and get user confirmation
+4. After compute runs: `reconcile`
+5. **Never** hand-edit inventory JSON
 
-## Manifest entry example
+## Inventory row (per large file)
 
-```json
-{
-  "id": "my-dataset",
-  "local": "data/my_dataset",
-  "blob_prefix": "data/my_dataset/",
-  "archive": "local_archive",
-  "status": "offloaded-local-removed"
-}
-```
+Each row: `local`, `blob`, `archive`, `sha256`, `etag`, `state`. Offload hashes **before** delete.
 
-Docs: https://github.com/sahasrarjn/cloud-vfs
+## Git
+
+- Commit benchmark inventory shards listed in `committed_prefixes`
+- Gitignore `ephemeral_prefixes` (e.g. `data/generated/`) — rebuild with `reconcile --from-blob --fix-index`
+
+Docs: https://github.com/sahasrarjn/cloud-vfs/blob/main/docs/CLOUD_VFS.md

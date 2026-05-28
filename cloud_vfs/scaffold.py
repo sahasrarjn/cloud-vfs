@@ -15,23 +15,30 @@ def cmd_init(project: Path, *, install_skill: bool) -> int:
         "config.env.example": cfg_dir / "config.env",
         "secrets.env.example": cfg_dir / "secrets.env.example",
         "manifest.json": cfg_dir / "manifest.json",
+        "inventory-policy.json.example": cfg_dir / "inventory-policy.json",
     }
     for src_name, dest in copies.items():
         src = package_path("templates", src_name)
-        if dest.name == "config.env" and dest.exists():
-            print(f"keep existing: {dest}")
-            continue
-        if dest.name == "manifest.json" and dest.exists():
+        if dest.name in ("config.env", "manifest.json", "inventory-policy.json") and dest.exists():
             print(f"keep existing: {dest}")
             continue
         shutil.copy2(src, dest)
         print(f"wrote: {dest}")
+
+    index_dir = cfg_dir / "index"
+    index_dir.mkdir(exist_ok=True)
+    index_readme = index_dir / "README.md"
+    if not index_readme.exists():
+        shutil.copy2(package_path("templates", "index-README.md"), index_readme)
+        print(f"wrote: {index_readme}")
 
     gitignore = project / ".gitignore"
     lines = [
         ".cloud-vfs/secrets.env",
         "**/.cloudstub",
         "**/*.cloudstub",
+        ".cloud-vfs/index/data/generated/",
+        ".cloud-vfs/index/code.json",
     ]
     if gitignore.exists():
         existing = gitignore.read_text().splitlines()
@@ -57,6 +64,7 @@ def cmd_init(project: Path, *, install_skill: bool) -> int:
     print("Next:")
     print("  1. Edit .cloud-vfs/config.env")
     print("  2. cloud-vfs-setup   # interactive wizard + optional Azure provision")
-    print("  3. Edit .cloud-vfs/manifest.json entries")
-    print("  4. cloud-vfs status && cloud-vfs offload --dry-run")
+    print("  3. Edit .cloud-vfs/manifest.json and inventory-policy.json")
+    print("  4. cloud-vfs status && cloud-vfs register data/  # large files only")
+    print("  5. cloud-vfs offload --dry-run")
     return 0

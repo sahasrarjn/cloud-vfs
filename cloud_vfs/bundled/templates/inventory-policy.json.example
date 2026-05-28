@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "description": "Which paths get per-file inventory rows and which shards are committed.",
+  "index_dir": ".cloud-vfs/index",
+  "min_size_bytes": 52428800,
+  "prefix_min_size_bytes": {
+    "data/model_weights/": 5242880
+  },
+  "include_prefixes": ["data/"],
+  "exclude_prefixes": ["code/", "research/", ".cursor/", "infra/"],
+  "committed_prefixes": [],
+  "ephemeral_prefixes": ["data/generated/"]
+}
