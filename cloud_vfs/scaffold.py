@@ -1,0 +1,62 @@
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+from cloud_vfs.project import package_path
+
+
+def cmd_init(project: Path, *, install_skill: bool) -> int:
+    project = project.resolve()
+    cfg_dir = project / ".cloud-vfs"
+    cfg_dir.mkdir(exist_ok=True)
+
+    copies = {
+        "config.env.example": cfg_dir / "config.env",
+        "secrets.env.example": cfg_dir / "secrets.env.example",
+        "manifest.json": cfg_dir / "manifest.json",
+    }
+    for src_name, dest in copies.items():
+        src = package_path("templates", src_name)
+        if dest.name == "config.env" and dest.exists():
+            print(f"keep existing: {dest}")
+            continue
+        if dest.name == "manifest.json" and dest.exists():
+            print(f"keep existing: {dest}")
+            continue
+        shutil.copy2(src, dest)
+        print(f"wrote: {dest}")
+
+    gitignore = project / ".gitignore"
+    lines = [
+        ".cloud-vfs/secrets.env",
+        "**/.cloudstub",
+        "**/*.cloudstub",
+    ]
+    if gitignore.exists():
+        existing = gitignore.read_text().splitlines()
+        missing = [line for line in lines if line not in existing]
+        if missing:
+            gitignore.write_text(gitignore.read_text().rstrip() + "\n" + "\n".join(missing) + "\n")
+            print(f"updated: {gitignore}")
+    else:
+        gitignore.write_text("\n".join(lines) + "\n")
+        print(f"wrote: {gitignore}")
+
+    if install_skill:
+        skill_src = package_path("skills", "azure-blob-storage")
+        skill_dest = project / ".cursor" / "skills" / "azure-blob-storage"
+        skill_dest.parent.mkdir(parents=True, exist_ok=True)
+        if skill_dest.exists():
+            print(f"keep existing skill: {skill_dest}")
+        else:
+            shutil.copytree(skill_src, skill_dest)
+            print(f"installed skill: {skill_dest}")
+
+    print()
+    print("Next:")
+    print("  1. Edit .cloud-vfs/config.env")
+    print("  2. cloud-vfs-setup   # interactive wizard + optional Azure provision")
+    print("  3. Edit .cloud-vfs/manifest.json entries")
+    print("  4. cloud-vfs status && cloud-vfs offload --dry-run")
+    return 0

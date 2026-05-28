@@ -1,0 +1,49 @@
+{
+  "version": 2,
+  "updated": "YYYY-MM-DD",
+  "architecture": "dual-blob — local archive and cloud staging are NOT synced",
+  "local_archive": {
+    "role": "Mac storage hygiene — offload, pull_blob, manifest catalog",
+    "account": "YOUR_LOCAL_ACCOUNT",
+    "container": "esp-cl-data",
+    "region": "YOUR_LOCAL_REGION",
+    "resource_group": "YOUR_LOCAL_RG",
+    "base_url": "https://YOUR_LOCAL_ACCOUNT.blob.core.windows.net/esp-cl-data",
+    "scripts": {
+      "upload_paths": "infra/offload_paths.sh",
+      "download_one": "infra/pull_blob.sh"
+    }
+  },
+  "runpod_staging": {
+    "role": "Active cloud runs — stage-azure, sync-pull, sync-push",
+    "account": "YOUR_RUNPOD_ACCOUNT",
+    "container": "esp-cl-data",
+    "region": "YOUR_RUNPOD_REGION",
+    "resource_group": "YOUR_RUNPOD_RG",
+    "base_url": "https://YOUR_RUNPOD_ACCOUNT.blob.core.windows.net/esp-cl-data",
+    "scripts": {
+      "upload_active_run": "runpod/stage-azure.sh",
+      "pull_gpu": "runpod/sync-pull.sh",
+      "push_checkpoints": "runpod/sync-push.sh"
+    }
+  },
+  "lifecycle": "local: download → use → offload → delete local | cloud: stage → sync-pull → run → sync-push",
+  "entries": [
+    {
+      "id": "example-offload",
+      "local": "data/generated/my_experiment",
+      "blob_prefix": "data/generated/my_experiment/",
+      "archive": "local_archive",
+      "status": "offload-candidate",
+      "notes": "Safe to remove locally after upload + manifest update"
+    },
+    {
+      "id": "example-required",
+      "local": "data/model_weights/my_checkpoint.pth",
+      "blob": "data/model_weights/my_checkpoint.pth",
+      "archive": "runpod_staging",
+      "status": "required-local",
+      "notes": "Keep local while experiment line is active"
+    }
+  ]
+}
