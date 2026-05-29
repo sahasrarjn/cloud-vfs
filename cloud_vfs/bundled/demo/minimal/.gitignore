@@ -1,0 +1,5 @@
+.cloud-vfs/secrets.env
+.cloud-vfs/config.env
+.cloud-vfs/.tmp
+**/.cloudstub
+data/sample/

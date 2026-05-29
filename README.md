@@ -32,20 +32,37 @@ No auto-tracking, no cron, no background jobs.
 ## Install
 
 ```bash
-pip install git+https://github.com/sahasrarjn/cloud-vfs.git
+pip install cloud-vfs
 ```
 
-Or:
+Or from GitHub:
 
 ```bash
+pip install git+https://github.com/sahasrarjn/cloud-vfs.git
 curl -fsSL https://raw.githubusercontent.com/sahasrarjn/cloud-vfs/main/install.sh | bash
 ```
 
 Requires **Python 3.9+**, `az` and/or `aws` CLI, and cloud credentials.
 
-## Quick start
+## Try it in 5 minutes
 
 ```bash
+pip install cloud-vfs
+cloud-vfs try
+cd cloud-vfs-try
+cp .cloud-vfs/config.env.example .cloud-vfs/config.env   # set a TEST bucket
+cloud-vfs doctor --roundtrip
+./scripts/create-sample.sh
+cloud-vfs offload --dry-run data/sample && cloud-vfs offload data/sample
+cloud-vfs ensure data/sample
+```
+
+Full walkthrough: [docs/TRY.md](docs/TRY.md). Same demo lives in [examples/minimal-demo/](examples/minimal-demo/) if you cloned this repo.
+
+## Quick start (your project)
+
+```bash
+cloud-vfs doctor                    # install + optional project checks
 cd your-project
 cloud-vfs init --skill
 cloud-vfs-setup                    # optional interactive wizard
@@ -74,6 +91,8 @@ Inventory rows are created by **`offload`**, **`register`**, and **`reconcile --
 
 | Command | Description |
 |---------|-------------|
+| `cloud-vfs doctor [--probe] [--roundtrip]` | Verify install, config, CLI, and cloud access |
+| `cloud-vfs try [--path DIR]` | Create sandbox demo project (default `./cloud-vfs-try`) |
 | `cloud-vfs init [--skill]` | Scaffold `.cloud-vfs/` in your project |
 | `cloud-vfs register <paths>` | Index local files (+ sha256); respects min size |
 | `cloud-vfs ensure <path>` | Fetch from cloud if inline ref / stub / cloud-only |
@@ -153,6 +172,9 @@ Never hand-edit `.cloud-vfs/index/*.json`.
 - [docs/CLOUD_VFS.md](docs/CLOUD_VFS.md) — workflow, stubs, drift
 - [docs/INVENTORY.md](docs/INVENTORY.md) — policy, shards, git hygiene
 - [docs/AGENTS.md](docs/AGENTS.md) — rules for coding agents
+- [docs/TRY.md](docs/TRY.md) — 5-minute try guide
+- [examples/minimal-demo/](examples/minimal-demo/) — demo sources (also bundled in `cloud-vfs try`)
+- [docs/PUBLISHING.md](docs/PUBLISHING.md) — PyPI release process
 
 ## License
 

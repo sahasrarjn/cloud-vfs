@@ -10,7 +10,9 @@ from typing import Any
 
 from cloud_vfs import __version__
 from cloud_vfs.project import fetch_cmd, manifest_path, project_root, temp_dir
+from cloud_vfs.doctor import cmd_doctor
 from cloud_vfs.scaffold import cmd_init
+from cloud_vfs.try_demo import cmd_try
 from cloud_vfs.storage.env import load_cloud_env, normalize_archive
 from cloud_vfs.storage.errors import CloudStorageError, CloudVfsError, PathOutsideProjectError
 from cloud_vfs.storage.fetch import fetch_path, manifest_with_provider, resolve_archive, upload_path
@@ -472,6 +474,18 @@ def main(argv: list[str] | None = None) -> int:
     p_init.add_argument("--skill", action="store_true", help="Install Cursor skill to .cursor/skills/")
     p_init.add_argument("--path", type=Path, default=Path.cwd(), help="Project root")
 
+    p_try = sub.add_parser(
+        "try",
+        help="Create a sandbox demo project to learn register/offload/ensure",
+    )
+    p_try.add_argument(
+        "--path",
+        type=Path,
+        default=Path("cloud-vfs-try"),
+        help="Directory to create (default: ./cloud-vfs-try)",
+    )
+    p_try.add_argument("--force", action="store_true", help="Overwrite an existing demo tree")
+
     p_ensure = sub.add_parser("ensure", help="Fetch from blob if stub or missing")
     p_ensure.add_argument("paths", nargs="+")
 
@@ -504,9 +518,20 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("materialize-stubs", help="Write .cloudstub for offloaded manifest entries")
 
+    p_doctor = sub.add_parser("doctor", help="Check install, project config, CLI, and cloud access")
+    p_doctor.add_argument("--json", action="store_true")
+    p_doctor.add_argument("--probe", action="store_true", help="List bucket/container (read-only)")
+    p_doctor.add_argument(
+        "--roundtrip",
+        action="store_true",
+        help="Upload and download a small probe object, then delete it",
+    )
+
     args = ap.parse_args(argv)
     if args.cmd == "init":
         return cmd_init(args.path, install_skill=args.skill)
+    if args.cmd == "try":
+        return cmd_try(args.path, force=args.force)
     if args.cmd == "ensure":
         return cmd_ensure(args.paths)
     if args.cmd == "resolve":
@@ -532,4 +557,6 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.cmd == "materialize-stubs":
         return cmd_materialize_stubs()
+    if args.cmd == "doctor":
+        return cmd_doctor(as_json=args.json, probe=args.probe, roundtrip=args.roundtrip)
     return 1

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0
+
+### Adoption
+
+- **`cloud-vfs doctor`** — checks Python, install, project scaffold, provider config, CLI tools, credentials; `--probe` and `--roundtrip` for bucket smoke tests
+- **PyPI** — install with `pip install cloud-vfs`; GitHub Actions publish on release ([docs/PUBLISHING.md](docs/PUBLISHING.md))
+- **`cloud-vfs try`** — scaffolds bundled sandbox demo (default `./cloud-vfs-try`)
+- **Example project** — [examples/minimal-demo/](examples/minimal-demo/) and [docs/TRY.md](docs/TRY.md)
+
 ## 0.4.1
 
 ### Robustness
