@@ -1,6 +1,6 @@
 # cloud-vfs
 
-Manual **cloud blob virtual filesystem** for ML and research repos. Keep your laptop small: large artifacts live in Azure Blob or S3, local disk keeps tiny `.cloudstub` pointers, and a **machine-maintained per-file inventory** tracks explicit cloud paths.
+Manual **cloud blob virtual filesystem** for ML and research repos. Keep your laptop small: large artifacts live in Azure Blob or S3, local disk keeps tiny **inline refs** (same path) or `.cloudstub` directory pointers, and a **machine-maintained per-file inventory** tracks explicit cloud paths.
 
 Works with **Cursor / Claude agents** or plain shell + [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) / [AWS CLI](https://aws.amazon.com/cli/).
 
@@ -76,14 +76,14 @@ Inventory rows are created by **`offload`**, **`register`**, and **`reconcile --
 |---------|-------------|
 | `cloud-vfs init [--skill]` | Scaffold `.cloud-vfs/` in your project |
 | `cloud-vfs register <paths>` | Index local files (+ sha256); respects min size |
-| `cloud-vfs ensure <path>` | Fetch from cloud if stub / cloud-only |
+| `cloud-vfs ensure <path>` | Fetch from cloud if inline ref / stub / cloud-only |
 | `cloud-vfs resolve <path>` | JSON: blob URL + inventory row (for agents) |
 | `cloud-vfs status [--drift]` | Manifest paths + inventory counts |
 | `cloud-vfs reconcile [--from-blob] [--fix-index]` | Drift audit; rebuild index from blob |
 | `cloud-vfs prune` | Remove inventory rows below min size |
 | `cloud-vfs offload --dry-run` | Preview offload candidates |
-| `cloud-vfs offload <paths>` | Upload + index (large files) + stub |
-| `cloud-vfs materialize-stubs` | Upgrade legacy stubs to v2 |
+| `cloud-vfs offload <paths>` | Upload + index (large files) + inline ref or dir stub |
+| `cloud-vfs materialize-stubs` | Write inline/sidecar refs; migrate legacy file sidecars |
 
 ## Project layout
 
@@ -99,7 +99,8 @@ your-project/
         ADME.json             # commit benchmark shards
         generated/            # often gitignored — regenerate from blob
   data/
-    big/.cloudstub            # v2 directory pointer when offloaded
+    big.npy                   # inline JSON ref when single file offloaded
+    big/.cloudstub            # directory pointer when tree offloaded
   .cursor/skills/cloud-vfs/   # optional
 ```
 
@@ -111,7 +112,8 @@ your-project/
 | `min_size_bytes` | 50 MB (52_428_800) |
 | `prefix_min_size_bytes` | e.g. `data/model_weights/` → 5 MB |
 | `exclude_prefixes` | `code/`, `research/`, … |
-| Offloaded split trees | stub `blob_prefix` for small members; index only large files |
+| Offloaded split trees | dir stub `blob_prefix` for small members; index only large files |
+| Offloaded single files | inline ref at original path (`"cvfs": 1`) |
 
 See [docs/INVENTORY.md](docs/INVENTORY.md).
 

@@ -4,15 +4,21 @@ Use when an coding agent reads, creates, or offloads large project data.
 
 ## Before reading cloud-only paths
 
+If file content is JSON with `"cvfs": 1`, the path is an **inline ref** — fetch before use:
+
 ```bash
 cloud-vfs ensure <path>
 ```
+
+For directories with `.cloudstub` only, run `ensure` on the directory path.
 
 Check first:
 
 ```bash
 cloud-vfs resolve <path>
 ```
+
+(`resolve` returns `is_ref`, `placement`: `inline` or `sidecar`.)
 
 ## After creating large outputs
 

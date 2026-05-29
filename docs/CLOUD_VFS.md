@@ -1,6 +1,6 @@
 # cloud-vfs workflow
 
-Large files live in cloud storage. The machine keeps **`.cloudstub`** directory pointers and a **per-file inventory** under `.cloud-vfs/index/`.
+Large files live in cloud storage. The machine keeps **inline refs** (single files at the original path) and **`.cloudstub`** directory pointers, plus a **per-file inventory** under `.cloud-vfs/index/`.
 
 ## Architecture
 
@@ -84,16 +84,44 @@ Path: `.cloud-vfs/index/<shard_root>.json`
 
 **States:** `local`, `synced`, `cloud-only`, `pending-upload`, `orphan-local`, `orphan-cloud`
 
-Only files meeting `inventory-policy.json` thresholds get rows. Small members of offloaded trees fetch via **`blob_prefix`** on the stub.
+Only files meeting `inventory-policy.json` thresholds get rows. Small members of offloaded trees fetch via **`blob_prefix`** on the dir stub.
 
-## Stub v2 (`.cloudstub`)
+## Hybrid refs (v0.4)
+
+| Artifact | Local after offload | Agent reads |
+|----------|---------------------|-------------|
+| Single file | JSON ref **at path** (`data/foo.npy`) | `"cvfs": 1` → run `ensure` |
+| Directory tree | `data/run/.cloudstub` | sidecar JSON → run `ensure` |
+
+Inventory (`.cloud-vfs/index/`) remains source of truth; inline refs are a denormalized agent cache.
+
+## Inline file ref
+
+Written at `data/embeddings.npy` after offload:
+
+```json
+{
+  "cvfs": 1,
+  "type": "cloud-blob-ref",
+  "version": 2,
+  "placement": "inline",
+  "local": "data/embeddings.npy",
+  "blob": "data/embeddings.npy",
+  "archive": "local_archive",
+  "fetch_cmd": "cloud-vfs ensure data/embeddings.npy"
+}
+```
+
+## Directory sidecar (`.cloudstub`)
 
 Directory offloaded:
 
 ```json
 {
+  "cvfs": 1,
   "type": "cloud-dir-ref",
   "version": 2,
+  "placement": "sidecar",
   "local": "data/generated/my_run",
   "archive": "local_archive",
   "shard_root": "data/generated/my_run",
@@ -108,8 +136,10 @@ Single file offloaded:
 
 ```json
 {
+  "cvfs": 1,
   "type": "cloud-blob-ref",
   "version": 2,
+  "placement": "inline",
   "local": "data/embeddings.npy",
   "blob": "data/embeddings.npy",
   "archive": "local_archive",
@@ -125,7 +155,10 @@ Single file offloaded:
 | `ghost-index` | Indexed cloud-only, blob missing |
 | `hash-mismatch` | Local sha256 ≠ inventory |
 | `unregistered-cloud` | On blob under policy prefix, not indexed |
-| `stale-stub` | Inventory says cloud-only but file exists locally |
+| `stale-stub` | Inventory says cloud-only but dir sidecar missing or dir has real files |
+| `stale-inline-ref` | Inventory vs inline ref mismatch (future reconcile) |
+
+Legacy `*.cloudstub` file sidecars migrate to inline refs via `materialize-stubs` or `ensure`.
 
 ## Trade-offs
 

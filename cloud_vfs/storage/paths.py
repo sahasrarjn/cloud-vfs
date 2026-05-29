@@ -27,16 +27,23 @@ def stub_file_for(rel: str) -> Path:
 
 
 def is_real_local(rel: str) -> bool:
+    from .stub import is_ref_path
+
     rel = normalize_rel(rel)
-    stub = stub_file_for(rel)
     target = abs_path(rel)
-    if stub.exists():
-        if not target.exists():
+
+    if target.is_file():
+        return not is_ref_path(target)
+
+    if not target.is_dir():
+        legacy_sidecar = stub_file_for(rel)
+        if legacy_sidecar.exists() and not target.exists():
             return False
-        if target.is_file():
-            return False
-        if target.is_dir():
-            others = [p for p in target.rglob("*") if p.name != STUB_NAME and p.is_file()]
-            return len(others) > 0
-        return False
-    return target.exists()
+        return target.exists()
+
+    others = [
+        p
+        for p in target.rglob("*")
+        if p.name != STUB_NAME and p.is_file() and not is_ref_path(p)
+    ]
+    return len(others) > 0

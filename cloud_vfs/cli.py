@@ -20,7 +20,15 @@ from cloud_vfs.storage.manifest import (
     save_manifest,
 )
 from cloud_vfs.storage.paths import abs_path, is_real_local, normalize_rel
-from cloud_vfs.storage.stub import read_stub, remove_stub, resolve_meta, write_stub
+from cloud_vfs.storage.stub import (
+    is_ref,
+    migrate_legacy_file_sidecar,
+    read_stub,
+    remove_stub,
+    resolve_meta,
+    stub_placement,
+    write_stub,
+)
 
 
 def tree_size(path: Path) -> int:
@@ -66,6 +74,7 @@ def cmd_ensure(paths: list[str]) -> int:
             print(f"ERROR: missing cloud config: {exc}", file=sys.stderr)
             return 1
         print(f"fetch: {rel} ({cfg.provider}/{archive})")
+        migrate_legacy_file_sidecar(rel)
         remove_stub(rel)
         nbytes = fetch_path(meta, rel, archive, env, mcfg)
         if entry:
@@ -83,12 +92,15 @@ def cmd_resolve(path: str) -> int:
     entry = find_entry(manifest, rel)
     stub = read_stub(rel)
     local_present = is_real_local(rel)
+    ref_present = is_ref(rel) or (stub is not None and not local_present)
     out: dict[str, Any] = {
         "path": rel,
         "project_root": str(project_root()),
         "manifest": str(manifest_path()),
         "local_present": local_present,
         "cloud_only": not local_present,
+        "is_ref": ref_present,
+        "placement": stub_placement(rel),
     }
     if entry:
         out["entry"] = {
@@ -221,13 +233,16 @@ def cmd_offload(
             "archive": use_archive,
             "provider": cfg.provider,
         }
-        if entry:
-            if entry.get("blob"):
-                meta["blob"] = entry["blob"]
-            meta["blob_prefix"] = entry.get("blob_prefix") or rel.rstrip("/") + "/"
-            mark_offloaded(entry)
+        if abs_path(rel).is_dir():
+            if entry:
+                meta["blob_prefix"] = entry.get("blob_prefix") or rel.rstrip("/") + "/"
+                mark_offloaded(entry)
+            else:
+                meta["blob_prefix"] = rel.rstrip("/") + "/"
         else:
-            meta["blob_prefix"] = rel.rstrip("/") + "/"
+            meta["blob"] = (entry.get("blob") if entry else None) or rel
+            if entry:
+                mark_offloaded(entry)
         if abs_path(rel).is_dir():
             shutil.rmtree(abs_path(rel))
         else:
@@ -248,17 +263,21 @@ def cmd_materialize_stubs() -> int:
         rel = normalize_rel(entry.get("local", ""))
         if not rel or is_real_local(rel):
             continue
-        write_stub(
-            rel,
-            {
-                "manifest_id": entry.get("id"),
-                "archive": entry.get("archive", "local_archive"),
-                "blob": entry.get("blob"),
-                "blob_prefix": entry.get("blob_prefix"),
-            },
-        )
+        meta = {
+            "manifest_id": entry.get("id"),
+            "archive": entry.get("archive", "local_archive"),
+            "blob": entry.get("blob"),
+            "blob_prefix": entry.get("blob_prefix"),
+        }
+        migrated = migrate_legacy_file_sidecar(rel)
+        if migrated:
+            n += 1
+            print(f"inline ref: {rel} (migrated)")
+            continue
+        write_stub(rel, meta)
         n += 1
-        print(f"stub: {rel}")
+        placement = "inline" if abs_path(rel).suffix else "sidecar"
+        print(f"{placement} ref: {rel}")
     save_manifest(manifest)
     print(f"Wrote {n} stub(s)")
     return 0

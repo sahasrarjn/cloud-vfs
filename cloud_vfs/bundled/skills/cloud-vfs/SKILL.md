@@ -10,7 +10,7 @@ description: >-
 
 Install: `pip install git+https://github.com/sahasrarjn/cloud-vfs.git`
 
-Large files live in cloud storage. Local disk holds `.cloudstub` pointers and a **per-file inventory** under `.cloud-vfs/index/`.
+Large files live in cloud storage. Local disk holds **inline refs** (single files at the original path) or **`.cloudstub`** directory pointers, plus a **per-file inventory** under `.cloud-vfs/index/`.
 
 ## Two layers
 
@@ -37,11 +37,13 @@ Large **`data/` artifacts only** (default ≥ 50 MB). Code excluded — see `inv
 
 ## Agent rules
 
-1. Before reading cloud-only paths: `ensure <path>`
-2. After creating outputs ≥ min size: `register <path>`
-3. Before offloading: **always** `offload --dry-run` and get user confirmation
-4. After compute runs: `reconcile`
-5. **Never** hand-edit inventory JSON
+1. **Inline refs:** If reading a path returns JSON with `"cvfs": 1`, run `cloud-vfs ensure <path>` before treating it as binary data (numpy, pandas, etc.)
+2. **Directory stubs:** If a directory contains only `.cloudstub`, run `ensure` on the directory path
+3. Before reading other cloud-only paths: `ensure <path>`
+4. After creating outputs ≥ min size: `register <path>`
+5. Before offloading: **always** `offload --dry-run` and get user confirmation
+6. After compute runs: `reconcile`
+7. **Never** hand-edit inventory JSON
 
 ## Inventory row (per large file)
 

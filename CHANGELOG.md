@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0
+
+### Hybrid inline stubs
+
+- **Single files** offloaded to cloud now keep a tiny JSON ref **at the original path** (agent-readable without sidecar lookup)
+- **Directory trees** still use `.cloudstub` sidecar (unchanged)
+- Inline refs use `"cvfs": 1`, `"placement": "inline"`, schema version 2
+- `resolve` reports `is_ref` and `placement`
+- Legacy `*.cloudstub` file sidecars migrate to inline on `ensure` / `materialize-stubs`
+- Scaffold gitignore drops `**/*.cloudstub` (dirs still ignore `**/.cloudstub`)
+
+### Documentation
+
+- Design spec: [2026-05-29-hybrid-inline-stubs-design.md](docs/superpowers/specs/2026-05-29-hybrid-inline-stubs-design.md)
+- Updated [CLOUD_VFS.md](docs/CLOUD_VFS.md), Cursor skill, README
+
 ## 0.3.0
 
 ### Documentation
