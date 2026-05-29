@@ -14,6 +14,9 @@ STUB_TYPE_DIR = "cloud-dir-ref"
 STUB_VERSION = 2
 REF_TYPES = (STUB_TYPE_BLOB, STUB_TYPE_DIR)
 
+# Inline refs are small JSON; multi-GB .npy/.pkl must never be read as text.
+MAX_REF_FILE_BYTES = 65_536
+
 
 def _is_file_rel(rel: str) -> bool:
     return bool(Path(normalize_rel(rel)).suffix)
@@ -38,8 +41,14 @@ def is_ref_path(path: Path) -> bool:
     if not path.is_file():
         return False
     try:
+        if path.stat().st_size > MAX_REF_FILE_BYTES:
+            return False
+        with path.open("rb") as handle:
+            head = handle.read(256).lstrip()
+        if not head.startswith(b"{"):
+            return False
         return parse_ref_text(path.read_text()) is not None
-    except OSError:
+    except (UnicodeDecodeError, OSError, ValueError):
         return False
 
 

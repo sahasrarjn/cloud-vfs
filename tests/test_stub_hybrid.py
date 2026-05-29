@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 
 from cloud_vfs.project import project_root
+from cloud_vfs.cli import cmd_offload
+from cloud_vfs.storage.manifest import load_manifest
 from cloud_vfs.storage.paths import is_real_local, stub_file_for
 from cloud_vfs.storage.stub import (
     CVFS_MARKER,
@@ -107,6 +109,53 @@ class HybridStubTests(unittest.TestCase):
         write_inline_ref(rel, {"blob": rel, "archive": "local_archive"})
         remove_stub(rel)
         self.assertFalse((self.root / rel).exists())
+
+    def test_binary_npy_is_real_local_not_ref(self) -> None:
+        """Regression: issue #1 — must not read .npy as UTF-8 stub JSON."""
+        rel = "data/weights.npy"
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x93NUMPY\x01\x00" + bytes(range(256)))
+
+        self.assertFalse(is_ref(rel))
+        self.assertTrue(is_real_local(rel))
+
+    def test_offload_binary_npy_no_unicode_error(self) -> None:
+        from unittest.mock import patch
+
+        rel = "data/model.npy"
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x93NUMPY\x00" + b"\x00" * 200)
+        (self.root / ".cloud-vfs" / "config.env").write_text(
+            "LOCAL_PROVIDER=aws\nAWS_LOCAL_BUCKET=test\n"
+        )
+        (self.root / ".cloud-vfs" / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "version": 3,
+                    "local_archive": {"provider": "aws", "bucket": "test"},
+                    "entries": [],
+                }
+            )
+            + "\n"
+        )
+        (self.root / ".cloud-vfs" / "inventory-policy.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "min_size_bytes": 1,
+                    "include_prefixes": ["data/"],
+                    "exclude_prefixes": [],
+                }
+            )
+            + "\n"
+        )
+
+        with patch("cloud_vfs.cli.upload_path", return_value=rel):
+            rc = cmd_offload([rel], dry_run=True, archive_override=None)
+
+        self.assertEqual(rc, 0)
 
 
 if __name__ == "__main__":

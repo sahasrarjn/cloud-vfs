@@ -14,7 +14,8 @@ from cloud_vfs.storage.fetch import manifest_with_provider
 from cloud_vfs.storage.io_util import atomic_write_json
 from cloud_vfs.storage.manifest import find_entry, load_manifest
 from cloud_vfs.storage.paths import STUB_NAME, abs_path, is_real_local, normalize_rel
-from cloud_vfs.storage.stub import STUB_TYPE_DIR, is_ref, read_stub, stub_placement
+from cloud_vfs.storage.errors import CloudVfsError
+from cloud_vfs.storage.stub import STUB_TYPE_DIR, is_ref, read_stub, stub_placement, write_stub
 
 DEFAULT_POLICY: dict[str, Any] = {
     "version": 1,
@@ -327,6 +328,83 @@ def prune_inventory() -> tuple[int, int]:
     return removed, kept
 
 
+class VerifyError(CloudVfsError):
+    """Fetched bytes do not match inventory sha256."""
+
+
+def verify_fetched_tree(rel: str, policy: dict[str, Any] | None = None) -> None:
+    """Raise VerifyError if local bytes disagree with inventory sha256 after ensure."""
+    policy = policy or load_policy()
+    rel = normalize_rel(rel)
+    mismatches: list[str] = []
+    for file_rel, path in _iter_local_files(rel):
+        found = find_row(file_rel, policy)
+        if not found:
+            continue
+        _, row = found
+        expected = row.get("sha256")
+        if not expected:
+            continue
+        actual = sha256_file(path)
+        if actual != expected:
+            mismatches.append(f"{file_rel} (expected {expected[:12]}…, got {actual[:12]}…)")
+    if mismatches:
+        raise VerifyError(
+            "Fetch verify failed — local sha256 does not match inventory:\n  "
+            + "\n  ".join(mismatches)
+        )
+
+
+def list_orphan_blobs() -> list[dict[str, Any]]:
+    """Blobs in the configured cloud-vfs bucket/prefix with no inventory row."""
+    policy = load_policy()
+    manifest = load_manifest()
+    env = load_cloud_env()
+    return _unregistered_cloud(policy, manifest, env)
+
+
+def repair_stubs() -> int:
+    """Rewrite missing stubs/inline refs from manifest + inventory (e2fsck-style repair)."""
+    manifest = load_manifest()
+    policy = load_policy()
+    repaired = 0
+
+    for entry in manifest.get("entries", []):
+        if entry.get("status") != "offloaded-local-removed":
+            continue
+        rel = normalize_rel(entry.get("local", ""))
+        if not rel or is_real_local(rel):
+            continue
+        meta = {
+            "manifest_id": entry.get("id"),
+            "archive": entry.get("archive", "local_archive"),
+            "blob": entry.get("blob"),
+            "blob_prefix": entry.get("blob_prefix"),
+        }
+        if read_stub(rel):
+            continue
+        write_stub(rel, meta)
+        repaired += 1
+
+    for _shard, local, row in iter_inventory_rows(policy):
+        if row.get("state") != "cloud-only":
+            continue
+        if is_real_local(local) or read_stub(local):
+            continue
+        entry = find_entry(manifest, local)
+        meta: dict[str, Any] = {
+            "archive": row.get("archive", "local_archive"),
+            "blob": row.get("blob"),
+        }
+        if entry:
+            meta["manifest_id"] = entry.get("id")
+            meta["blob_prefix"] = entry.get("blob_prefix")
+        write_stub(local, meta)
+        repaired += 1
+
+    return repaired
+
+
 def detect_drift(*, check_blob: bool = False) -> list[dict[str, Any]]:
     policy = load_policy()
     manifest = load_manifest()
@@ -351,15 +429,25 @@ def detect_drift(*, check_blob: bool = False) -> list[dict[str, Any]]:
 
     for shard_root, local, row in iter_inventory_rows(policy):
         state = row.get("state")
+        stub = read_stub(local)
+        entry = find_entry(manifest, local)
         if state == "cloud-only":
             if is_real_local(local):
-                issues.append({"type": "stale-inline-ref" if is_ref(local) else "local-index-mismatch", "path": local})
-            stub = read_stub(local)
-            entry = find_entry(manifest, local)
-            if Path(local).suffix == "" and not stub and not is_real_local(local):
+                issues.append({"type": "local-index-mismatch", "path": local})
+            elif Path(local).suffix == "" and not stub:
                 issues.append({"type": "stale-stub", "path": local})
-            if is_ref(local) and state == "cloud-only" and stub_placement(local) == "inline":
-                pass
+            elif stub:
+                inv_blob = row.get("blob")
+                stub_blob = stub.get("blob")
+                if inv_blob and stub_blob and inv_blob != stub_blob:
+                    issues.append(
+                        {
+                            "type": "ref-inventory-mismatch",
+                            "path": local,
+                            "inventory_blob": inv_blob,
+                            "stub_blob": stub_blob,
+                        }
+                    )
             if check_blob:
                 archive = normalize_archive(row.get("archive", "local_archive"))
                 prov = row.get("provider") or (entry or {}).get("provider")
@@ -372,8 +460,11 @@ def detect_drift(*, check_blob: bool = False) -> list[dict[str, Any]]:
                 blob = row.get("blob")
                 if blob and not _blob_exists(cfg, blob):
                     issues.append({"type": "ghost-index", "path": local, "blob": blob})
-        elif state == "local" and not is_real_local(local):
-            issues.append({"type": "ghost-local", "path": local})
+        elif state == "local":
+            if is_ref(local):
+                issues.append({"type": "stale-inline-ref", "path": local})
+            elif not is_real_local(local) and not stub:
+                issues.append({"type": "ghost-local", "path": local})
 
     if check_blob:
         issues.extend(_unregistered_cloud(policy, manifest, env))
@@ -436,7 +527,7 @@ def _unregistered_cloud(
             path = normalize_rel(key)
             if not in_scope(path, policy):
                 continue
-            issues.append({"type": "unregistered-cloud", "path": path, "blob": key})
+            issues.append({"type": "orphan-blob", "path": path, "blob": key})
     return issues
 
 

@@ -10,7 +10,11 @@ from typing import Any
 
 from cloud_vfs import __version__
 from cloud_vfs.project import fetch_cmd, manifest_path, project_root, temp_dir
+from cloud_vfs.doctor import cmd_doctor
+from cloud_vfs.guard import assess_delete_safety, cmd_guard
 from cloud_vfs.scaffold import cmd_init
+from cloud_vfs.scan import cmd_scan
+from cloud_vfs.try_demo import cmd_try
 from cloud_vfs.storage.env import load_cloud_env, normalize_archive
 from cloud_vfs.storage.errors import CloudStorageError, CloudVfsError, PathOutsideProjectError
 from cloud_vfs.storage.fetch import fetch_path, manifest_with_provider, resolve_archive, upload_path
@@ -19,12 +23,16 @@ from cloud_vfs.storage.inventory import (
     hash_paths_before_offload,
     index_offloaded_path,
     iter_inventory_rows,
+    list_orphan_blobs,
     load_policy,
     mark_inventory_fetched,
     prune_inventory,
     rebuild_index_from_blob,
     register_paths,
+    repair_stubs,
+    verify_fetched_tree,
 )
+from cloud_vfs.storage.inventory import VerifyError
 from cloud_vfs.storage.manifest import (
     ensure_manifest_entry,
     find_entry,
@@ -85,7 +93,7 @@ def _safe_fetch(rel: str, meta: dict[str, Any], archive: str, env: dict[str, str
     return nbytes
 
 
-def cmd_ensure(paths: list[str]) -> int:
+def cmd_ensure(paths: list[str], *, verify: bool) -> int:
     try:
         manifest = load_manifest()
     except (FileNotFoundError, ValueError) as exc:
@@ -122,11 +130,17 @@ def cmd_ensure(paths: list[str]) -> int:
         except (CloudStorageError, FileNotFoundError, OSError) as exc:
             _print_error(exc)
             return 1
+        if verify:
+            try:
+                verify_fetched_tree(rel)
+            except VerifyError as exc:
+                _print_error(exc)
+                return 1
         mark_inventory_fetched(rel)
         if entry:
             mark_fetched(entry)
             changed = True
-        print(f"OK: {rel} ({fmt_bytes(nbytes)})")
+        print(f"OK: {rel} ({fmt_bytes(nbytes)})" + (" verified" if verify else ""))
     if changed:
         save_manifest(manifest)
     return 0
@@ -143,6 +157,7 @@ def cmd_resolve(path: str) -> int:
     stub = read_stub(rel)
     local_present = is_real_local(rel)
     ref_present = is_ref(rel) or (stub is not None and not local_present)
+    safety = assess_delete_safety(rel)
     out: dict[str, Any] = {
         "path": rel,
         "project_root": str(project_root()),
@@ -151,6 +166,9 @@ def cmd_resolve(path: str) -> int:
         "cloud_only": not local_present,
         "is_ref": ref_present,
         "placement": stub_placement(rel),
+        "managed_by_cloud_vfs": safety["managed_by_cloud_vfs"],
+        "safe_to_delete_local": safety["safe_to_delete_local"],
+        "delete_safety_reasons": safety["reasons"],
     }
     if entry:
         out["entry"] = {
@@ -286,9 +304,11 @@ def cmd_offload(
         paths = offload_candidates(manifest)
         if not paths:
             print("Nothing local to offload.")
+            print("  cloud-vfs scan              # find large files under data/")
+            print("  cloud-vfs scan --add        # add them to manifest, then retry")
             return 0
         if dry_run:
-            print("Local paths (pass explicit paths to offload, or run without --dry-run):")
+            print("Would offload (confirm, then run without --dry-run):")
     changed = False
     for raw in paths:
         try:
@@ -389,6 +409,8 @@ def cmd_reconcile(
     as_json: bool,
     from_blob: bool,
     fix_index: bool,
+    repair_stubs_flag: bool,
+    orphan_blobs: bool,
     prefix: str | None,
 ) -> int:
     try:
@@ -396,6 +418,27 @@ def cmd_reconcile(
     except (FileNotFoundError, ValueError) as exc:
         _print_error(exc)
         return 1
+    if repair_stubs_flag:
+        n = repair_stubs()
+        print(f"Repaired {n} stub/ref(s) from manifest and inventory.")
+        return 0
+    if orphan_blobs:
+        orphans = list_orphan_blobs()
+        if as_json:
+            print(json.dumps(orphans, indent=2))
+        else:
+            if not orphans:
+                print("No orphan blobs under cloud-vfs policy prefixes (unindexed in inventory).")
+            else:
+                print(
+                    f"{len(orphans)} orphan blob(s) in cloud-vfs bucket "
+                    "(not in inventory — may be old paths or non-vfs uploads; do not auto-delete):"
+                )
+                for issue in orphans:
+                    print(f"  {issue.get('blob', issue.get('path', '-'))}")
+                print("\nThese are only blobs visible via your cloud-vfs config bucket/prefixes.")
+                print("Prod/other buckets are never scanned.")
+        return 0
     if fix_index:
         if not prefix:
             _print_error("--fix-index requires --prefix")
@@ -472,8 +515,25 @@ def main(argv: list[str] | None = None) -> int:
     p_init.add_argument("--skill", action="store_true", help="Install Cursor skill to .cursor/skills/")
     p_init.add_argument("--path", type=Path, default=Path.cwd(), help="Project root")
 
+    p_try = sub.add_parser(
+        "try",
+        help="Create a sandbox demo project to learn register/offload/ensure",
+    )
+    p_try.add_argument(
+        "--path",
+        type=Path,
+        default=Path("cloud-vfs-try"),
+        help="Directory to create (default: ./cloud-vfs-try)",
+    )
+    p_try.add_argument("--force", action="store_true", help="Overwrite an existing demo tree")
+
     p_ensure = sub.add_parser("ensure", help="Fetch from blob if stub or missing")
     p_ensure.add_argument("paths", nargs="+")
+    p_ensure.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Skip sha256 check against inventory after download",
+    )
 
     p_resolve = sub.add_parser("resolve", help="JSON fetch instructions")
     p_resolve.add_argument("path")
@@ -481,6 +541,18 @@ def main(argv: list[str] | None = None) -> int:
     p_status = sub.add_parser("status", help="Local vs stub + sizes")
     p_status.add_argument("--json", action="store_true")
     p_status.add_argument("--drift", action="store_true", help="Include inventory drift summary")
+
+    p_scan = sub.add_parser(
+        "scan",
+        help="List large local files in your repo (policy scope); optional --add to manifest",
+    )
+    p_scan.add_argument("--json", action="store_true")
+    p_scan.add_argument(
+        "--add",
+        action="store_true",
+        help="Add untracked paths to manifest as offload-candidate",
+    )
+    p_scan.add_argument("--prefix", help="Limit scan to a path prefix (e.g. data/old_run)")
 
     p_register = sub.add_parser("register", help="Index local large files (+ sha256)")
     p_register.add_argument("paths", nargs="+")
@@ -490,6 +562,23 @@ def main(argv: list[str] | None = None) -> int:
     p_reconcile.add_argument("--from-blob", action="store_true", help="Check blob existence")
     p_reconcile.add_argument("--fix-index", action="store_true", help="Rebuild index from blob listing")
     p_reconcile.add_argument("--prefix", help="Prefix for --fix-index")
+    p_reconcile.add_argument(
+        "--repair-stubs",
+        action="store_true",
+        help="Regenerate missing inline refs and .cloudstub from manifest/inventory",
+    )
+    p_reconcile.add_argument(
+        "--orphan-blobs",
+        action="store_true",
+        help="List blobs in cloud-vfs bucket/prefixes not in inventory (read-only)",
+    )
+
+    p_guard = sub.add_parser(
+        "guard",
+        help="Block unsafe local deletes (e.g. prod bucket uploads cloud-vfs does not track)",
+    )
+    p_guard.add_argument("paths", nargs="+")
+    p_guard.add_argument("--json", action="store_true")
 
     sub.add_parser("prune", help="Remove inventory rows below min size")
 
@@ -504,15 +593,28 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("materialize-stubs", help="Write .cloudstub for offloaded manifest entries")
 
+    p_doctor = sub.add_parser("doctor", help="Check install, project config, CLI, and cloud access")
+    p_doctor.add_argument("--json", action="store_true")
+    p_doctor.add_argument("--probe", action="store_true", help="List bucket/container (read-only)")
+    p_doctor.add_argument(
+        "--roundtrip",
+        action="store_true",
+        help="Upload and download a small probe object, then delete it",
+    )
+
     args = ap.parse_args(argv)
     if args.cmd == "init":
         return cmd_init(args.path, install_skill=args.skill)
+    if args.cmd == "try":
+        return cmd_try(args.path, force=args.force)
     if args.cmd == "ensure":
-        return cmd_ensure(args.paths)
+        return cmd_ensure(args.paths, verify=not args.no_verify)
     if args.cmd == "resolve":
         return cmd_resolve(args.path)
     if args.cmd == "status":
         return cmd_status(as_json=args.json, drift=args.drift)
+    if args.cmd == "scan":
+        return cmd_scan(as_json=args.json, add=args.add, prefix=args.prefix)
     if args.cmd == "register":
         return cmd_register(args.paths)
     if args.cmd == "reconcile":
@@ -520,8 +622,12 @@ def main(argv: list[str] | None = None) -> int:
             as_json=args.json,
             from_blob=args.from_blob,
             fix_index=args.fix_index,
+            repair_stubs_flag=args.repair_stubs,
+            orphan_blobs=args.orphan_blobs,
             prefix=args.prefix,
         )
+    if args.cmd == "guard":
+        return cmd_guard(args.paths, as_json=args.json)
     if args.cmd == "prune":
         return cmd_prune()
     if args.cmd == "offload":
@@ -532,4 +638,6 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.cmd == "materialize-stubs":
         return cmd_materialize_stubs()
+    if args.cmd == "doctor":
+        return cmd_doctor(as_json=args.json, probe=args.probe, roundtrip=args.roundtrip)
     return 1

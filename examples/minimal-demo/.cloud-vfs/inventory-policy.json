@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "description": "Demo policy — low threshold so sample files are indexed quickly.",
+  "index_dir": ".cloud-vfs/index",
+  "min_size_bytes": 1048576,
+  "include_prefixes": ["data/"],
+  "exclude_prefixes": ["scripts/"],
+  "committed_prefixes": [],
+  "ephemeral_prefixes": []
+}

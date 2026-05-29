@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.5.2
+
+### Bug fixes
+
+- **#1** — `offload` / `is_real_local` no longer crash on binary files (`.npy`, `.pkl`, etc.): stub detection uses size + JSON prefix probe instead of full-file `read_text()`
+
+### Robustness (Linux-style fsck + safety)
+
+- **`ensure`** verifies downloaded bytes against inventory sha256 by default (`--no-verify` to skip)
+- **`reconcile --repair-stubs`** regenerates missing refs from manifest/inventory
+- **`reconcile --orphan-blobs`** lists unindexed blobs in the **cloud-vfs-configured** bucket only
+- **`cloud-vfs guard`** blocks deleting real local files not managed by cloud-vfs (prod-bucket hallucination guard)
+- **`resolve`** exposes `managed_by_cloud_vfs`, `safe_to_delete_local`, `delete_safety_reasons`
+- Drift: `stale-inline-ref`, `ref-inventory-mismatch`, `local-index-mismatch`; `orphan-blob` replaces `unregistered-cloud`
+- [docs/ROBUSTNESS.md](docs/ROBUSTNESS.md) — two-bucket safety model
+
+## 0.5.1
+
+### Your-repo workflow
+
+- **`cloud-vfs scan`** — discover large local files under inventory policy; **`scan --add`** adds them to manifest
+- **`offload --dry-run`** hints to run `scan` when manifest has no local candidates
+- [docs/YOUR_REPO.md](docs/YOUR_REPO.md) — setup in any folder, scan → dry-run → offload
+
+## 0.5.0
+
+### Adoption
+
+- **`cloud-vfs doctor`** — checks Python, install, project scaffold, provider config, CLI tools, credentials; `--probe` and `--roundtrip` for bucket smoke tests
+- **PyPI** — install with `pip install cloud-vfs`; GitHub Actions publish on release ([docs/PUBLISHING.md](docs/PUBLISHING.md))
+- **`cloud-vfs try`** — scaffolds bundled sandbox demo (default `./cloud-vfs-try`)
+- **Example project** — [examples/minimal-demo/](examples/minimal-demo/) and [docs/TRY.md](docs/TRY.md)
+
 ## 0.4.1
 
 ### Robustness

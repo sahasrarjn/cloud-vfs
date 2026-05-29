@@ -50,11 +50,25 @@ Fix ephemeral generated indexes if needed:
 cloud-vfs reconcile --from-blob --fix-index --prefix data/generated/
 ```
 
+## Before deleting local files
+
+**Mandatory** — prod/other buckets are invisible to cloud-vfs:
+
+```bash
+cloud-vfs guard <path>
+```
+
+- Exit **non-zero** if real local bytes exist (`REAL_LOCAL_BYTES` / `NOT_MANAGED_BY_CLOUD_VFS`).
+- Only trust deletion of local bytes after a successful **cloud-vfs** offload and inventory `cloud-only`.
+- `resolve` includes `managed_by_cloud_vfs` and `safe_to_delete_local` — do not delete when `managed_by_cloud_vfs` is false.
+
 ## Never
 
 - Hand-edit `.cloud-vfs/index/*.json`
 - Offload without dry-run preview
 - Delete local data before upload verify succeeds
+- Delete because "file is in blob" without `guard` + cloud-vfs offload proof
+- Assume uploads to prod/staging buckets outside `.cloud-vfs/config.env` are tracked
 - Commit `secrets.env` or register entire `code/` trees
 
 ## Install skill in project
