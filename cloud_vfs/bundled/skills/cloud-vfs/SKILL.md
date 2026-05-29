@@ -28,6 +28,8 @@ Large **`data/` artifacts only** (default ≥ 50 MB). Code excluded — see `inv
 | Learn in sandbox | `cloud-vfs try` then `cd cloud-vfs-try` |
 | Setup any repo | `cloud-vfs init --path .` |
 | Verify setup | `cloud-vfs doctor` / `doctor --roundtrip` |
+| Before deleting local files | `cloud-vfs guard <path>` (required) |
+| Fetch + verify | `cloud-vfs ensure <path>` |
 | Find offload candidates | `cloud-vfs scan` / `scan --add` |
 | Index new local files | `cloud-vfs register <path>` |
 | Fetch (file or tree) | `cloud-vfs ensure <path>` |

@@ -34,9 +34,12 @@ Agent lookup        →  resolve <path>            →  JSON with blob_url
 cloud-vfs register data/embeddings.npy
 cloud-vfs register data/generated/new_run
 
-# Fetch
+# Fetch (verifies sha256 vs inventory by default)
 cloud-vfs ensure data/generated/old_run
 cloud-vfs ensure data/embeddings.npy
+
+# Safe delete check (blocks prod-bucket hallucinations)
+cloud-vfs guard data/embeddings.npy
 
 # Inspect (no download)
 cloud-vfs resolve data/generated/old_run
@@ -46,6 +49,9 @@ cloud-vfs status --drift
 
 # Reconcile
 cloud-vfs reconcile
+cloud-vfs reconcile --from-blob
+cloud-vfs reconcile --repair-stubs
+cloud-vfs reconcile --orphan-blobs
 cloud-vfs reconcile --from-blob --fix-index --prefix data/generated/
 
 # Offload
@@ -154,9 +160,11 @@ Single file offloaded:
 | `orphan-local` | On disk, not in inventory (and above min size) |
 | `ghost-index` | Indexed cloud-only, blob missing |
 | `hash-mismatch` | Local sha256 ≠ inventory |
-| `unregistered-cloud` | On blob under policy prefix, not indexed |
-| `stale-stub` | Inventory says cloud-only but dir sidecar missing or dir has real files |
-| `stale-inline-ref` | Inventory vs inline ref mismatch (future reconcile) |
+| `orphan-blob` | On cloud-vfs bucket under policy prefix, not in inventory |
+| `stale-stub` | Inventory says cloud-only but dir sidecar missing |
+| `stale-inline-ref` | Inventory `local` but path is still an inline ref |
+| `ref-inventory-mismatch` | Stub `blob` ≠ inventory `blob` |
+| `local-index-mismatch` | Inventory `cloud-only` but real local bytes present |
 
 Legacy `*.cloudstub` file sidecars migrate to inline refs via `materialize-stubs` or `ensure`.
 
@@ -170,3 +178,4 @@ Legacy `*.cloudstub` file sidecars migrate to inline refs via `materialize-stubs
 
 - [INVENTORY.md](INVENTORY.md) — policy knobs and git hygiene
 - [AGENTS.md](AGENTS.md) — agent rules
+- [ROBUSTNESS.md](ROBUSTNESS.md) — two-bucket safety, guard, verify

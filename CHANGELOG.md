@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.2
+
+### Bug fixes
+
+- **#1** — `offload` / `is_real_local` no longer crash on binary files (`.npy`, `.pkl`, etc.): stub detection uses size + JSON prefix probe instead of full-file `read_text()`
+
+### Robustness (Linux-style fsck + safety)
+
+- **`ensure`** verifies downloaded bytes against inventory sha256 by default (`--no-verify` to skip)
+- **`reconcile --repair-stubs`** regenerates missing refs from manifest/inventory
+- **`reconcile --orphan-blobs`** lists unindexed blobs in the **cloud-vfs-configured** bucket only
+- **`cloud-vfs guard`** blocks deleting real local files not managed by cloud-vfs (prod-bucket hallucination guard)
+- **`resolve`** exposes `managed_by_cloud_vfs`, `safe_to_delete_local`, `delete_safety_reasons`
+- Drift: `stale-inline-ref`, `ref-inventory-mismatch`, `local-index-mismatch`; `orphan-blob` replaces `unregistered-cloud`
+- [docs/ROBUSTNESS.md](docs/ROBUSTNESS.md) — two-bucket safety model
+
 ## 0.5.1
 
 ### Your-repo workflow

@@ -92,7 +92,9 @@ Inventory rows are created by **`offload`**, **`register`**, and **`reconcile --
 
 | Command | Description |
 |---------|-------------|
+| `cloud-vfs guard <paths>` | Block unsafe local deletes (not managed by cloud-vfs) |
 | `cloud-vfs doctor [--probe] [--roundtrip]` | Verify install, config, CLI, and cloud access |
+| `cloud-vfs ensure [--no-verify]` | Fetch from cloud; default verifies sha256 vs inventory |
 | `cloud-vfs try [--path DIR]` | Create sandbox demo project (default `./cloud-vfs-try`) |
 | `cloud-vfs init [--path DIR] [--skill]` | Scaffold `.cloud-vfs/` in any folder |
 | `cloud-vfs scan [--add] [--prefix P]` | Find large local files; optionally add to manifest |
@@ -174,6 +176,7 @@ Never hand-edit `.cloud-vfs/index/*.json`.
 - [docs/CLOUD_VFS.md](docs/CLOUD_VFS.md) — workflow, stubs, drift
 - [docs/INVENTORY.md](docs/INVENTORY.md) — policy, shards, git hygiene
 - [docs/AGENTS.md](docs/AGENTS.md) — rules for coding agents
+- [docs/ROBUSTNESS.md](docs/ROBUSTNESS.md) — verify, guard, orphan blobs, prod vs cloud-vfs bucket
 - [docs/YOUR_REPO.md](docs/YOUR_REPO.md) — scan and offload in your existing repo
 - [docs/TRY.md](docs/TRY.md) — 5-minute try guide
 - [examples/minimal-demo/](examples/minimal-demo/) — demo sources (also bundled in `cloud-vfs try`)

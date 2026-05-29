@@ -95,7 +95,7 @@ class RobustnessTests(unittest.TestCase):
         write_inline_ref(rel, {"blob": rel, "archive": "local_archive"})
 
         with patch("cloud_vfs.cli.fetch_path", side_effect=FileNotFoundError("blob missing")):
-            rc = cmd_ensure([rel])
+            rc = cmd_ensure([rel], verify=True)
 
         self.assertEqual(rc, 1)
         self.assertTrue(is_ref(rel))
