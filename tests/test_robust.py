@@ -148,7 +148,7 @@ class RobustnessTests(unittest.TestCase):
         digest = sha256_file(self.root / rel)
 
         with patch("cloud_vfs.cli.upload_path", return_value=rel):
-            rc = cmd_offload([rel], dry_run=False, archive_override=None)
+            rc = cmd_offload([rel], dry_run=False, archive_override=None, delete_local=True)
 
         self.assertEqual(rc, 0)
         self.assertTrue(is_ref(rel))

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.3
+
+### Bug fixes
+
+- **#1** — Binary stub detection never reads `.npy`/`.pkl` as UTF-8 (bounded binary probe only)
+
+### Enhancements
+
+- **#3** — `offload` prints upload start line and a heartbeat every 30s while azcopy/aws sync runs
+- **#4** — `offload --keep-local` / `--delete-local` (default) make post-upload behavior explicit
+- **#5** — Inventory indexing batches shard writes (one flush per shard, not per file)
+- **#6** — `ensure <directory>` expands to cloud-only files under that prefix (inline refs + inventory)
+
 ## 0.5.2
 
 ### Bug fixes
