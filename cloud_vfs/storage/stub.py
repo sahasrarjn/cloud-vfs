@@ -44,11 +44,15 @@ def is_ref_path(path: Path) -> bool:
         if path.stat().st_size > MAX_REF_FILE_BYTES:
             return False
         with path.open("rb") as handle:
-            head = handle.read(256).lstrip()
-        if not head.startswith(b"{"):
+            data = handle.read(MAX_REF_FILE_BYTES)
+        if not data.lstrip().startswith(b"{"):
             return False
-        return parse_ref_text(path.read_text()) is not None
-    except (UnicodeDecodeError, OSError, ValueError):
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+        return parse_ref_text(text) is not None
+    except (OSError, ValueError):
         return False
 
 

@@ -142,16 +142,25 @@ def iter_inventory_rows(policy: dict[str, Any]) -> Iterator[tuple[str, str, dict
             yield shard_root, normalize_rel(local), row
 
 
+def upsert_rows_batch(
+    shard_root: str,
+    rows: dict[str, dict[str, Any]],
+    policy: dict[str, Any],
+) -> None:
+    if not rows:
+        return
+    shard = load_shard(shard_root, policy)
+    shard["files"].update(rows)
+    save_shard(shard, policy)
+
+
 def upsert_row(
     shard_root: str,
     local: str,
     row: dict[str, Any],
     policy: dict[str, Any],
 ) -> None:
-    local = normalize_rel(local)
-    shard = load_shard(shard_root, policy)
-    shard["files"][local] = row
-    save_shard(shard, policy)
+    upsert_rows_batch(shard_root, {normalize_rel(local): row}, policy)
 
 
 def remove_row(shard_root: str, local: str, policy: dict[str, Any]) -> bool:
@@ -261,6 +270,7 @@ def index_offloaded_path(
     blob_prefix: str | None,
     entry: dict[str, Any] | None,
     precomputed: dict[str, str] | None = None,
+    keep_local: bool = False,
 ) -> int:
     policy = load_policy()
     rel = normalize_rel(rel)
@@ -276,6 +286,7 @@ def index_offloaded_path(
     else:
         return 0
 
+    shard_batches: dict[str, dict[str, dict[str, Any]]] = {}
     for file_rel, digest in file_items:
         path = abs_path(file_rel)
         size = path.stat().st_size if path.exists() and not is_ref(file_rel) else 0
@@ -294,12 +305,15 @@ def index_offloaded_path(
             blob=file_blob,
             size=size,
             sha256=digest,
-            state="cloud-only",
+            state="local" if keep_local else "cloud-only",
             policy_id=(entry or {}).get("id"),
         )
         row["uploaded_at"] = _now_iso()
-        upsert_row(shard_root, file_rel, row, policy)
+        shard_batches.setdefault(shard_root, {})[file_rel] = row
         indexed += 1
+
+    for shard_root, rows in shard_batches.items():
+        upsert_rows_batch(shard_root, rows, policy)
     return indexed
 
 
@@ -533,6 +547,11 @@ def _unregistered_cloud(
 
 def mark_inventory_fetched(local: str) -> None:
     policy = load_policy()
+    local = normalize_rel(local)
+    target = abs_path(local)
+    if target.is_dir():
+        mark_inventory_fetched_tree(local, policy=policy)
+        return
     found = find_row(local, policy)
     if not found:
         return
@@ -543,6 +562,23 @@ def mark_inventory_fetched(local: str) -> None:
         row["sha256"] = sha256_file(path)
         row["updated_at"] = _now_iso()
         upsert_row(shard_root, local, row, policy)
+
+
+def mark_inventory_fetched_tree(rel: str, *, policy: dict[str, Any] | None = None) -> None:
+    policy = policy or load_policy()
+    rel = normalize_rel(rel)
+    shard_batches: dict[str, dict[str, dict[str, Any]]] = {}
+    for file_rel, path in _iter_local_files(rel):
+        found = find_row(file_rel, policy)
+        if not found or not is_real_local(file_rel):
+            continue
+        shard_root, row = found
+        row["state"] = "local"
+        row["sha256"] = sha256_file(path)
+        row["updated_at"] = _now_iso()
+        shard_batches.setdefault(shard_root, {})[file_rel] = row
+    for shard_root, rows in shard_batches.items():
+        upsert_rows_batch(shard_root, rows, policy)
 
 
 def rebuild_index_from_blob(

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -12,12 +14,57 @@ from .errors import CloudStorageError
 from .paths import STUB_NAME, abs_path, normalize_rel
 
 
-def _run(cmd: list[str], *, action: str) -> subprocess.CompletedProcess[str]:
+def _run(cmd: list[str], *, action: str, **_ignored: Any) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or exc.stdout or "").strip()
         raise CloudStorageError(action, cmd, stderr, exc.returncode) from exc
+
+
+def _run_with_progress(
+    cmd: list[str],
+    *,
+    action: str,
+    label: str | None = None,
+    heartbeat_sec: float = 30.0,
+) -> subprocess.CompletedProcess[str]:
+    if label:
+        print(label, flush=True)
+
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    output_lines: list[str] = []
+    stop = threading.Event()
+
+    def _reader() -> None:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            output_lines.append(line)
+
+    def _heartbeat() -> None:
+        start = time.monotonic()
+        while not stop.wait(heartbeat_sec):
+            elapsed = int(time.monotonic() - start)
+            mins, secs = divmod(elapsed, 60)
+            if mins:
+                elapsed_str = f"{mins}m{secs:02d}s"
+            else:
+                elapsed_str = f"{secs}s"
+            print(f"[cloud-vfs offload] still uploading… ({elapsed_str} elapsed)", flush=True)
+
+    reader = threading.Thread(target=_reader, daemon=True)
+    heartbeat = threading.Thread(target=_heartbeat, daemon=True)
+    reader.start()
+    heartbeat.start()
+    rc = proc.wait()
+    stop.set()
+    reader.join()
+    heartbeat.join(timeout=1.0)
+
+    stdout = "".join(output_lines)
+    if rc != 0:
+        raise CloudStorageError(action, cmd, stdout.strip(), rc)
+    return subprocess.CompletedProcess(cmd, rc, stdout=stdout)
 
 
 def _dir_size(path: Path) -> int:
@@ -137,33 +184,46 @@ def fetch_path(
     return _dir_size(final_dest)
 
 
-def upload_path(rel: str, cfg: ArchiveConfig, *, blob_prefix: str | None = None) -> str:
+def upload_path(
+    rel: str,
+    cfg: ArchiveConfig,
+    *,
+    blob_prefix: str | None = None,
+    progress_label: str | None = None,
+) -> str:
     rel = normalize_rel(rel)
     src = abs_path(rel)
     if not src.exists():
         raise FileNotFoundError(rel)
     key_base = (blob_prefix or rel).rstrip("/")
 
+    upload = _run_with_progress if progress_label else _run
+
     if cfg.provider == "aws":
         if src.is_dir():
             sample = _first_data_file(src)
             uri = f"s3://{cfg.bucket}/{key_base}/"
-            _run(
+            upload(
                 _aws_base(cfg) + ["s3", "sync", str(src), uri, "--only-show-errors"],
                 action=f"sync upload to s3://{cfg.bucket}/{key_base}/",
+                label=progress_label,
             )
             key = f"{key_base}/{sample.relative_to(src).as_posix()}"
         else:
             key = key_base if blob_prefix else rel
             uri = f"s3://{cfg.bucket}/{key}"
-            _run(_aws_base(cfg) + ["s3", "cp", str(src), uri], action=f"upload s3://{cfg.bucket}/{key}")
+            upload(
+                _aws_base(cfg) + ["s3", "cp", str(src), uri],
+                action=f"upload s3://{cfg.bucket}/{key}",
+                label=progress_label,
+            )
         _run(_aws_base(cfg) + ["s3", "ls", f"s3://{cfg.bucket}/{key}"], action=f"verify s3://{cfg.bucket}/{key}")
         return key
 
     if src.is_dir():
         sample = _first_data_file(src)
         dest_path = key_base if blob_prefix else rel
-        _run(
+        upload(
             [
                 "az",
                 "storage",
@@ -184,10 +244,11 @@ def upload_path(rel: str, cfg: ArchiveConfig, *, blob_prefix: str | None = None)
                 "--no-progress",
             ],
             action=f"upload-batch azure {dest_path}/",
+            label=progress_label,
         )
         blob_name = f"{dest_path}/{sample.relative_to(src).as_posix()}"
     else:
-        _run(
+        upload(
             [
                 "az",
                 "storage",
@@ -206,6 +267,7 @@ def upload_path(rel: str, cfg: ArchiveConfig, *, blob_prefix: str | None = None)
                 "--overwrite",
             ],
             action=f"upload azure blob {rel}",
+            label=progress_label,
         )
         blob_name = rel
 

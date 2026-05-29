@@ -153,7 +153,7 @@ class HybridStubTests(unittest.TestCase):
         )
 
         with patch("cloud_vfs.cli.upload_path", return_value=rel):
-            rc = cmd_offload([rel], dry_run=True, archive_override=None)
+            rc = cmd_offload([rel], dry_run=True, archive_override=None, delete_local=True)
 
         self.assertEqual(rc, 0)
 

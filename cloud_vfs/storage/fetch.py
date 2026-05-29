@@ -32,9 +32,10 @@ def upload_path(
     manifest: dict[str, Any],
     *,
     blob_prefix: str | None = None,
+    progress_label: str | None = None,
 ) -> str:
     cfg = resolve_archive(env, manifest, normalize_archive(archive))
-    return _upload_path(rel, cfg, blob_prefix=blob_prefix)
+    return _upload_path(rel, cfg, blob_prefix=blob_prefix, progress_label=progress_label)
 
 
 __all__ = ["fetch_path", "upload_path", "resolve_archive", "manifest_with_provider", "ArchiveConfig"]
