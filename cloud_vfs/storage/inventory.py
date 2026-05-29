@@ -4,7 +4,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from cloud_vfs.project import inventory_policy_path, project_root
 from cloud_vfs.storage.backends import list_blob_keys
@@ -271,6 +271,8 @@ def index_offloaded_path(
     entry: dict[str, Any] | None,
     precomputed: dict[str, str] | None = None,
     keep_local: bool = False,
+    skip_files: set[str] | None = None,
+    on_file_indexed: Callable[[str], None] | None = None,
 ) -> int:
     policy = load_policy()
     rel = normalize_rel(rel)
@@ -286,8 +288,11 @@ def index_offloaded_path(
     else:
         return 0
 
+    skip = skip_files or set()
     shard_batches: dict[str, dict[str, dict[str, Any]]] = {}
     for file_rel, digest in file_items:
+        if file_rel in skip:
+            continue
         path = abs_path(file_rel)
         size = path.stat().st_size if path.exists() and not is_ref(file_rel) else 0
         if not size and entry:
@@ -314,6 +319,9 @@ def index_offloaded_path(
 
     for shard_root, rows in shard_batches.items():
         upsert_rows_batch(shard_root, rows, policy)
+        if on_file_indexed:
+            for file_rel in rows:
+                on_file_indexed(file_rel)
     return indexed
 
 

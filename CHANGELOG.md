@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.4
+
+### Bug fixes
+
+- **#8** — `offload`/`ensure` no longer hang silently: subprocess idle timeout (default 600s, `CLOUD_VFS_SUBPROCESS_IDLE_TIMEOUT_SEC`) aborts stuck az/aws CLI calls; heartbeats every 30s during transfers
+
+### Enhancements
+
+- **#8** — Resumable offload via `.cloud-vfs/offload-progress/` checkpoints (auto-resume on re-run; `--no-resume` to restart)
+- **#8** — `offload --verify-only` compares local paths to blob storage for safe recovery after interrupt
+- **#8** — SIGTERM flushes partial offload progress (and manifest when updated) before exit
+- **#8** — `ensure` emits progress heartbeats during fetch/sync
+
 ## 0.5.3
 
 ### Bug fixes

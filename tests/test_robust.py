@@ -108,7 +108,7 @@ class RobustnessTests(unittest.TestCase):
         meta = read_stub(rel)
         assert meta is not None
 
-        def fake_fetch(_meta, _rel, _archive, _env, _manifest, *, dest=None, dest_root=None):
+        def fake_fetch(_meta, _rel, _archive, _env, _manifest, *, dest=None, dest_root=None, progress_label=None):
             assert dest is not None
             dest.write_bytes(payload)
             return len(payload)

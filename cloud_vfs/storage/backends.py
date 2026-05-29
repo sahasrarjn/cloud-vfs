@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 import time
@@ -14,43 +15,56 @@ from .errors import CloudStorageError
 from .paths import STUB_NAME, abs_path, normalize_rel
 
 
-def _run(cmd: list[str], *, action: str, **_ignored: Any) -> subprocess.CompletedProcess[str]:
+def _default_idle_timeout_sec() -> float:
+    raw = os.environ.get("CLOUD_VFS_SUBPROCESS_IDLE_TIMEOUT_SEC", "600")
     try:
-        return subprocess.run(cmd, check=True, capture_output=True, text=True)
-    except subprocess.CalledProcessError as exc:
-        stderr = (exc.stderr or exc.stdout or "").strip()
-        raise CloudStorageError(action, cmd, stderr, exc.returncode) from exc
+        return float(raw)
+    except ValueError:
+        return 600.0
 
 
-def _run_with_progress(
+def _run_monitored(
     cmd: list[str],
     *,
     action: str,
     label: str | None = None,
     heartbeat_sec: float = 30.0,
+    idle_timeout_sec: float | None = None,
+    heartbeat_prefix: str = "[cloud-vfs offload]",
 ) -> subprocess.CompletedProcess[str]:
+    idle_timeout_sec = idle_timeout_sec if idle_timeout_sec is not None else _default_idle_timeout_sec()
     if label:
         print(label, flush=True)
 
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     output_lines: list[str] = []
     stop = threading.Event()
+    timed_out = threading.Event()
+    last_output = time.monotonic()
+    output_lock = threading.Lock()
 
     def _reader() -> None:
+        nonlocal last_output
         assert proc.stdout is not None
         for line in proc.stdout:
-            output_lines.append(line)
+            with output_lock:
+                output_lines.append(line)
+                last_output = time.monotonic()
 
     def _heartbeat() -> None:
         start = time.monotonic()
         while not stop.wait(heartbeat_sec):
+            with output_lock:
+                idle = time.monotonic() - last_output
+            if idle >= idle_timeout_sec:
+                timed_out.set()
+                proc.kill()
+                stop.set()
+                return
             elapsed = int(time.monotonic() - start)
             mins, secs = divmod(elapsed, 60)
-            if mins:
-                elapsed_str = f"{mins}m{secs:02d}s"
-            else:
-                elapsed_str = f"{secs}s"
-            print(f"[cloud-vfs offload] still uploading… ({elapsed_str} elapsed)", flush=True)
+            elapsed_str = f"{mins}m{secs:02d}s" if mins else f"{secs}s"
+            print(f"{heartbeat_prefix} still running… ({elapsed_str} elapsed)", flush=True)
 
     reader = threading.Thread(target=_reader, daemon=True)
     heartbeat = threading.Thread(target=_heartbeat, daemon=True)
@@ -62,9 +76,34 @@ def _run_with_progress(
     heartbeat.join(timeout=1.0)
 
     stdout = "".join(output_lines)
+    if timed_out.is_set():
+        raise CloudStorageError(
+            action,
+            cmd,
+            f"no subprocess output for {int(idle_timeout_sec)}s — aborted (command may be hung)",
+            rc or 1,
+        )
     if rc != 0:
         raise CloudStorageError(action, cmd, stdout.strip(), rc)
     return subprocess.CompletedProcess(cmd, rc, stdout=stdout)
+
+
+def _run(cmd: list[str], *, action: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    label = kwargs.pop("label", None)
+    heartbeat_prefix = kwargs.pop("heartbeat_prefix", "[cloud-vfs]")
+    idle_timeout_sec = kwargs.pop("idle_timeout_sec", None)
+    try:
+        return _run_monitored(
+            cmd,
+            action=action,
+            label=label,
+            heartbeat_prefix=heartbeat_prefix,
+            idle_timeout_sec=idle_timeout_sec,
+        )
+    except subprocess.CalledProcessError:
+        raise
+    except CloudStorageError:
+        raise
 
 
 def _dir_size(path: Path) -> int:
@@ -100,17 +139,24 @@ def fetch_path(
     *,
     dest: Path | None = None,
     dest_root: Path | None = None,
+    progress_label: str | None = None,
 ) -> int:
     rel = normalize_rel(rel)
     root = dest_root or project_root()
     final_dest = dest or abs_path(rel)
+    heartbeat_prefix = "[cloud-vfs ensure]"
 
     if cfg.provider == "aws":
         if meta.get("blob"):
             key = meta["blob"]
             final_dest.parent.mkdir(parents=True, exist_ok=True)
             uri = f"s3://{cfg.bucket}/{key}"
-            _run(_aws_base(cfg) + ["s3", "cp", uri, str(final_dest)], action=f"download s3://{cfg.bucket}/{key}")
+            _run(
+                _aws_base(cfg) + ["s3", "cp", uri, str(final_dest)],
+                action=f"download s3://{cfg.bucket}/{key}",
+                label=progress_label,
+                heartbeat_prefix=heartbeat_prefix,
+            )
             size = final_dest.stat().st_size
             if size == 0:
                 raise FileNotFoundError(f"Downloaded blob is empty: {key}")
@@ -121,6 +167,8 @@ def fetch_path(
         _run(
             _aws_base(cfg) + ["s3", "sync", uri, str(final_dest), "--only-show-errors"],
             action=f"sync s3://{cfg.bucket}/{prefix}/",
+            label=progress_label,
+            heartbeat_prefix=heartbeat_prefix,
         )
         if not final_dest.exists() or not any(final_dest.iterdir()):
             raise FileNotFoundError(f"S3 sync completed but {rel} is empty or missing")
@@ -148,6 +196,8 @@ def fetch_path(
                 "--no-progress",
             ],
             action=f"download azure blob {blob}",
+            label=progress_label,
+            heartbeat_prefix=heartbeat_prefix,
         )
         size = final_dest.stat().st_size
         if size == 0:
@@ -176,6 +226,8 @@ def fetch_path(
             "--no-progress",
         ],
         action=f"download-batch azure prefix {prefix}/",
+        label=progress_label,
+        heartbeat_prefix=heartbeat_prefix,
     )
     if not final_dest.exists():
         raise FileNotFoundError(f"Batch download completed but {rel} missing")
@@ -197,13 +249,11 @@ def upload_path(
         raise FileNotFoundError(rel)
     key_base = (blob_prefix or rel).rstrip("/")
 
-    upload = _run_with_progress if progress_label else _run
-
     if cfg.provider == "aws":
         if src.is_dir():
             sample = _first_data_file(src)
             uri = f"s3://{cfg.bucket}/{key_base}/"
-            upload(
+            _run(
                 _aws_base(cfg) + ["s3", "sync", str(src), uri, "--only-show-errors"],
                 action=f"sync upload to s3://{cfg.bucket}/{key_base}/",
                 label=progress_label,
@@ -212,18 +262,22 @@ def upload_path(
         else:
             key = key_base if blob_prefix else rel
             uri = f"s3://{cfg.bucket}/{key}"
-            upload(
+            _run(
                 _aws_base(cfg) + ["s3", "cp", str(src), uri],
                 action=f"upload s3://{cfg.bucket}/{key}",
                 label=progress_label,
             )
-        _run(_aws_base(cfg) + ["s3", "ls", f"s3://{cfg.bucket}/{key}"], action=f"verify s3://{cfg.bucket}/{key}")
+        _run(
+            _aws_base(cfg) + ["s3", "ls", f"s3://{cfg.bucket}/{key}"],
+            action=f"verify s3://{cfg.bucket}/{key}",
+            idle_timeout_sec=120.0,
+        )
         return key
 
     if src.is_dir():
         sample = _first_data_file(src)
         dest_path = key_base if blob_prefix else rel
-        upload(
+        _run(
             [
                 "az",
                 "storage",
@@ -248,7 +302,7 @@ def upload_path(
         )
         blob_name = f"{dest_path}/{sample.relative_to(src).as_posix()}"
     else:
-        upload(
+        _run(
             [
                 "az",
                 "storage",
@@ -289,6 +343,7 @@ def upload_path(
             "none",
         ],
         action=f"verify azure blob {blob_name}",
+        idle_timeout_sec=120.0,
     )
     return blob_name
 
@@ -303,6 +358,7 @@ def list_blob_keys(cfg: ArchiveConfig, prefix: str) -> list[str]:
         result = _run(
             _aws_base(cfg) + ["s3", "ls", target, "--recursive"],
             action=f"list s3://{cfg.bucket}/{prefix}",
+            idle_timeout_sec=300.0,
         )
         keys: list[str] = []
         for line in result.stdout.splitlines():
@@ -330,6 +386,6 @@ def list_blob_keys(cfg: ArchiveConfig, prefix: str) -> list[str]:
     ]
     if prefix:
         cmd += ["--prefix", prefix]
-    result = _run(cmd, action=f"list azure blobs under {prefix or '(root)'}")
+    result = _run(cmd, action=f"list azure blobs under {prefix or '(root)'}", idle_timeout_sec=300.0)
     data = json.loads(result.stdout or "[]")
     return [item["name"] for item in data if item.get("name")]
