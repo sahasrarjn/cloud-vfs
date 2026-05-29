@@ -109,7 +109,7 @@ class GuardVerifyTests(unittest.TestCase):
         register_paths([rel])
         write_inline_ref(rel, {"blob": rel, "archive": "local_archive"})
 
-        def bad_fetch(_meta, _rel, _archive, _env, _manifest, *, dest=None, dest_root=None):
+        def bad_fetch(_meta, _rel, _archive, _env, _manifest, *, dest=None, dest_root=None, progress_label=None):
             assert dest is not None
             dest.write_bytes(b"wrong-payload")
             return len(b"wrong-payload")

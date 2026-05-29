@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,12 @@ from cloud_vfs.cli import cmd_ensure, cmd_offload
 from cloud_vfs.project import project_root
 from cloud_vfs.storage.inventory import find_row, index_offloaded_path, load_policy, upsert_rows_batch
 from cloud_vfs.storage.manifest import load_manifest
+from cloud_vfs.storage.offload_progress import (
+    OffloadInterruptState,
+    load_offload_progress,
+    new_offload_progress,
+    save_offload_progress,
+)
 from cloud_vfs.storage.paths import is_real_local
 from cloud_vfs.storage.stub import is_ref, write_inline_ref
 
@@ -69,7 +76,7 @@ class IssueFixTests(unittest.TestCase):
 
         payloads = {f"{dir_rel}/{name}": f"csv-{name}".encode() for name in files}
 
-        def fake_fetch(meta, rel, archive, env, manifest, *, dest=None, dest_root=None):
+        def fake_fetch(meta, rel, archive, env, manifest, *, dest=None, dest_root=None, progress_label=None):
             assert dest is not None
             dest.write_bytes(payloads[rel])
             return len(payloads[rel])
@@ -165,6 +172,86 @@ class IssueFixTests(unittest.TestCase):
             cmd_offload([rel], dry_run=False, archive_override=None, delete_local=True)
 
         self.assertIn("uploading", captured.get("label") or "")
+
+    def test_offload_resume_skips_upload(self) -> None:
+        """Issue #8 — re-run resumes after upload checkpoint without re-uploading."""
+        rel = "data/resume-me.bin"
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"resume-payload")
+
+        upload_calls: list[str] = []
+
+        def fake_upload(*args, **kwargs):
+            upload_calls.append(args[0])
+            return rel
+
+        progress = new_offload_progress(
+            rel,
+            archive="local_archive",
+            delete_local=True,
+            precomputed={"data/resume-me.bin": "abc123"},
+        )
+        progress["uploaded"] = True
+        save_offload_progress(progress)
+
+        with patch("cloud_vfs.cli.upload_path", side_effect=fake_upload):
+            rc = cmd_offload([rel], dry_run=False, archive_override=None, delete_local=True)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(upload_calls, [])
+        self.assertTrue(is_ref(rel))
+
+    def test_offload_verify_only_reports_diff(self) -> None:
+        """Issue #8 — --verify-only compares local files to blob listing."""
+        rel = "data/verify-dir"
+        for name in ("a.csv", "b.csv"):
+            file_path = self.root / rel / name
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(name)
+
+        def fake_list(_cfg, prefix):
+            return [f"{prefix.rstrip('/')}/a.csv"]
+
+        with patch("cloud_vfs.storage.offload_progress.list_blob_keys", side_effect=fake_list):
+            rc = cmd_offload([rel], dry_run=False, archive_override=None, delete_local=True, verify_only=True)
+
+        self.assertEqual(rc, 0)
+
+    def test_sigterm_flushes_offload_progress(self) -> None:
+        """Issue #8 — SIGTERM saves partial progress before exit."""
+        rel = "data/interrupted.bin"
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"partial")
+
+        progress = new_offload_progress(
+            rel,
+            archive="local_archive",
+            delete_local=True,
+            precomputed={rel: "deadbeef"},
+        )
+        progress["uploaded"] = True
+        save_offload_progress(progress)
+
+        manifest = load_manifest()
+        state = OffloadInterruptState(manifest=manifest, progress=progress)
+        state.flush()
+
+        reloaded = load_offload_progress(rel)
+        assert reloaded is not None
+        self.assertTrue(reloaded.get("uploaded"))
+
+    def test_subprocess_idle_timeout(self) -> None:
+        """Issue #8 — hung subprocess aborts after idle timeout."""
+        from cloud_vfs.storage.backends import _run_monitored
+        from cloud_vfs.storage.errors import CloudStorageError
+
+        cmd = [sys.executable, "-c", "import time; time.sleep(60)"]
+        with patch.dict(os.environ, {"CLOUD_VFS_SUBPROCESS_IDLE_TIMEOUT_SEC": "1"}):
+            with self.assertRaises(CloudStorageError) as ctx:
+                _run_monitored(cmd, action="test idle", heartbeat_sec=0.5, idle_timeout_sec=1.0)
+        self.assertIn("no subprocess output", str(ctx.exception))
 
 
 if __name__ == "__main__":

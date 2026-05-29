@@ -19,10 +19,18 @@ def fetch_path(
     *,
     dest: Path | None = None,
     dest_root: Path | None = None,
+    progress_label: str | None = None,
 ) -> int:
     cfg = resolve_archive(env, manifest, normalize_archive(archive))
     meta = {**meta, "archive": cfg.name, "provider": cfg.provider}
-    return _fetch_path(meta, rel, cfg, dest=dest, dest_root=dest_root)
+    return _fetch_path(
+        meta,
+        rel,
+        cfg,
+        dest=dest,
+        dest_root=dest_root,
+        progress_label=progress_label,
+    )
 
 
 def upload_path(
