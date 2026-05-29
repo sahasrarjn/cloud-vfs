@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.1
+
+### Robustness
+
+- **Safe `ensure`:** fetch to temp first; inline refs are removed only after a successful download
+- **Safe `offload`:** sha256 captured before upload; stub written after verified upload (inline ref overwrites file; dir sidecar persisted via temp before tree removal)
+- **Inventory commands:** `register`, `reconcile`, `prune`, and `status --drift` implemented in CLI
+- **Atomic writes** for manifest and inventory shards
+- **Clear errors** for cloud CLI failures, missing manifest, and paths outside project root
+- **Empty directory upload** rejected with an explicit error
+
+### Tests
+
+- Regression tests for fetch failure ref preservation, offload hashing, register/prune/drift
+
 ## 0.4.0
 
 ### Hybrid inline stubs
@@ -32,7 +47,7 @@
 
 ### CLI
 
-- Inventory commands (`register`, `reconcile`, `prune`, `status --drift`) — see [ESP-CL reference](https://github.com/sahasrarjn/cloud-vfs/issues) if not yet in your pip build; reference implementation in consuming projects' `infra/vfs.py`.
+- Inventory commands (`register`, `reconcile`, `prune`, `status --drift`) — shipped in 0.4.1+
 
 ## 0.2.0
 

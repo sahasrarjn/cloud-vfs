@@ -35,6 +35,7 @@ def cmd_init(project: Path, *, install_skill: bool) -> int:
     gitignore = project / ".gitignore"
     lines = [
         ".cloud-vfs/secrets.env",
+        ".cloud-vfs/.tmp",
         "**/.cloudstub",
         ".cloud-vfs/index/data/generated/",
         ".cloud-vfs/index/code.json",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os
+from pathlib import Path
 from typing import Any
 
 from cloud_vfs.storage.env import normalize_archive
@@ -10,10 +10,19 @@ from .backends import upload_path as _upload_path
 from .config import ArchiveConfig, manifest_with_provider, resolve_archive
 
 
-def fetch_path(meta: dict[str, Any], rel: str, archive: str, env: dict[str, str], manifest: dict[str, Any]) -> int:
+def fetch_path(
+    meta: dict[str, Any],
+    rel: str,
+    archive: str,
+    env: dict[str, str],
+    manifest: dict[str, Any],
+    *,
+    dest: Path | None = None,
+    dest_root: Path | None = None,
+) -> int:
     cfg = resolve_archive(env, manifest, normalize_archive(archive))
     meta = {**meta, "archive": cfg.name, "provider": cfg.provider}
-    return _fetch_path(meta, rel, cfg)
+    return _fetch_path(meta, rel, cfg, dest=dest, dest_root=dest_root)
 
 
 def upload_path(

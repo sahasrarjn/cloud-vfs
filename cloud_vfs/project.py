@@ -66,6 +66,16 @@ def manifest_path() -> Path:
     return root / ".cloud-vfs" / "manifest.json"
 
 
+def inventory_policy_path() -> Path:
+    return project_root() / ".cloud-vfs" / "inventory-policy.json"
+
+
+def temp_dir() -> Path:
+    path = project_root() / ".cloud-vfs" / ".tmp"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def package_path(*parts: str) -> Path:
     return BUNDLED.joinpath(*parts)
 

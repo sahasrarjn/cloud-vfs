@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from cloud_vfs.project import project_root
+from cloud_vfs.storage.errors import PathOutsideProjectError
 
 STUB_NAME = ".cloudstub"
 
@@ -11,7 +12,12 @@ def normalize_rel(path: str | Path) -> str:
     p = Path(path)
     root = project_root()
     if p.is_absolute():
-        p = p.relative_to(root)
+        try:
+            p = p.relative_to(root)
+        except ValueError as exc:
+            raise PathOutsideProjectError(
+                f"Path {path!r} is outside project root {root}"
+            ) from exc
     return p.as_posix().rstrip("/")
 
 
