@@ -12,6 +12,7 @@ from cloud_vfs import __version__
 from cloud_vfs.project import fetch_cmd, manifest_path, project_root, temp_dir
 from cloud_vfs.doctor import cmd_doctor
 from cloud_vfs.scaffold import cmd_init
+from cloud_vfs.scan import cmd_scan
 from cloud_vfs.try_demo import cmd_try
 from cloud_vfs.storage.env import load_cloud_env, normalize_archive
 from cloud_vfs.storage.errors import CloudStorageError, CloudVfsError, PathOutsideProjectError
@@ -288,9 +289,11 @@ def cmd_offload(
         paths = offload_candidates(manifest)
         if not paths:
             print("Nothing local to offload.")
+            print("  cloud-vfs scan              # find large files under data/")
+            print("  cloud-vfs scan --add        # add them to manifest, then retry")
             return 0
         if dry_run:
-            print("Local paths (pass explicit paths to offload, or run without --dry-run):")
+            print("Would offload (confirm, then run without --dry-run):")
     changed = False
     for raw in paths:
         try:
@@ -496,6 +499,18 @@ def main(argv: list[str] | None = None) -> int:
     p_status.add_argument("--json", action="store_true")
     p_status.add_argument("--drift", action="store_true", help="Include inventory drift summary")
 
+    p_scan = sub.add_parser(
+        "scan",
+        help="List large local files in your repo (policy scope); optional --add to manifest",
+    )
+    p_scan.add_argument("--json", action="store_true")
+    p_scan.add_argument(
+        "--add",
+        action="store_true",
+        help="Add untracked paths to manifest as offload-candidate",
+    )
+    p_scan.add_argument("--prefix", help="Limit scan to a path prefix (e.g. data/old_run)")
+
     p_register = sub.add_parser("register", help="Index local large files (+ sha256)")
     p_register.add_argument("paths", nargs="+")
 
@@ -538,6 +553,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_resolve(args.path)
     if args.cmd == "status":
         return cmd_status(as_json=args.json, drift=args.drift)
+    if args.cmd == "scan":
+        return cmd_scan(as_json=args.json, add=args.add, prefix=args.prefix)
     if args.cmd == "register":
         return cmd_register(args.paths)
     if args.cmd == "reconcile":

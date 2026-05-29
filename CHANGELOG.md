@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1
+
+### Your-repo workflow
+
+- **`cloud-vfs scan`** — discover large local files under inventory policy; **`scan --add`** adds them to manifest
+- **`offload --dry-run`** hints to run `scan` when manifest has no local candidates
+- [docs/YOUR_REPO.md](docs/YOUR_REPO.md) — setup in any folder, scan → dry-run → offload
+
 ## 0.5.0
 
 ### Adoption

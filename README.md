@@ -61,21 +61,22 @@ Full walkthrough: [docs/TRY.md](docs/TRY.md). Same demo lives in [examples/minim
 
 ## Quick start (your project)
 
-```bash
-cloud-vfs doctor                    # install + optional project checks
-cd your-project
-cloud-vfs init --skill
-cloud-vfs-setup                    # optional interactive wizard
-# edit .cloud-vfs/manifest.json
-# edit .cloud-vfs/inventory-policy.json  (optional; defaults are sensible)
+Point at **any repo or folder** (must be writable; run from repo root or pass `--path`):
 
-cloud-vfs register data/big/embeddings.npy   # index local large files
-cloud-vfs status --drift
-cloud-vfs offload --dry-run
-cloud-vfs offload data/old_run               # only after you choose
-cloud-vfs ensure data/old_run                # fetch when needed
-cloud-vfs prune                              # drop sub-threshold inventory rows
+```bash
+cd /path/to/your-ml-repo
+cloud-vfs init --path . --skill
+cp .cloud-vfs/config.env.example .cloud-vfs/config.env   # set bucket (see config.env.example)
+cloud-vfs doctor --roundtrip
+
+cloud-vfs scan                    # what large files can you offload?
+cloud-vfs scan --add              # add them to manifest (no upload yet)
+cloud-vfs offload --dry-run       # preview: sizes + cloud target
+cloud-vfs offload data/your_run   # upload + stub (you choose paths)
+cloud-vfs ensure data/your_run    # fetch back when needed
 ```
+
+Optional: `cloud-vfs register <path>` indexes sha256 without upload; `cloud-vfs status --drift` audits inventory.
 
 ## Two layers
 
@@ -93,7 +94,8 @@ Inventory rows are created by **`offload`**, **`register`**, and **`reconcile --
 |---------|-------------|
 | `cloud-vfs doctor [--probe] [--roundtrip]` | Verify install, config, CLI, and cloud access |
 | `cloud-vfs try [--path DIR]` | Create sandbox demo project (default `./cloud-vfs-try`) |
-| `cloud-vfs init [--skill]` | Scaffold `.cloud-vfs/` in your project |
+| `cloud-vfs init [--path DIR] [--skill]` | Scaffold `.cloud-vfs/` in any folder |
+| `cloud-vfs scan [--add] [--prefix P]` | Find large local files; optionally add to manifest |
 | `cloud-vfs register <paths>` | Index local files (+ sha256); respects min size |
 | `cloud-vfs ensure <path>` | Fetch from cloud if inline ref / stub / cloud-only |
 | `cloud-vfs resolve <path>` | JSON: blob URL + inventory row (for agents) |
@@ -172,6 +174,7 @@ Never hand-edit `.cloud-vfs/index/*.json`.
 - [docs/CLOUD_VFS.md](docs/CLOUD_VFS.md) — workflow, stubs, drift
 - [docs/INVENTORY.md](docs/INVENTORY.md) — policy, shards, git hygiene
 - [docs/AGENTS.md](docs/AGENTS.md) — rules for coding agents
+- [docs/YOUR_REPO.md](docs/YOUR_REPO.md) — scan and offload in your existing repo
 - [docs/TRY.md](docs/TRY.md) — 5-minute try guide
 - [examples/minimal-demo/](examples/minimal-demo/) — demo sources (also bundled in `cloud-vfs try`)
 - [docs/PUBLISHING.md](docs/PUBLISHING.md) — PyPI release process

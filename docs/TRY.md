@@ -56,8 +56,10 @@ ls -la data/sample/
 
 ```bash
 cd your-ml-project
-cloud-vfs init --skill
+cloud-vfs init --path . --skill
 cloud-vfs doctor --roundtrip
+cloud-vfs scan
+cloud-vfs scan --add && cloud-vfs offload --dry-run
 ```
 
-See [README](../README.md) and [CLOUD_VFS.md](CLOUD_VFS.md).
+See [YOUR_REPO.md](YOUR_REPO.md), [README](../README.md), and [CLOUD_VFS.md](CLOUD_VFS.md).

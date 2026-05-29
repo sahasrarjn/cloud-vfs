@@ -66,8 +66,9 @@ def cmd_init(project: Path, *, install_skill: bool) -> int:
     print("  2. Edit .cloud-vfs/config.env (and secrets.env for Azure keys)")
     print("  3. cloud-vfs-setup   # optional interactive wizard + Azure provision")
     print("  4. cloud-vfs doctor --roundtrip")
-    print("  5. cloud-vfs status && cloud-vfs register data/  # large files only")
-    print("  6. cloud-vfs offload --dry-run")
+    print("  5. cloud-vfs scan                 # see what you can offload")
+    print("  6. cloud-vfs scan --add && cloud-vfs offload --dry-run")
+    print("  7. cloud-vfs offload <paths>      # after you confirm")
     print()
     print("New to cloud-vfs? Run: cloud-vfs try   # sandbox demo in ./cloud-vfs-try")
     return 0
