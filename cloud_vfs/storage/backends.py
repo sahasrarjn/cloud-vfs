@@ -99,10 +99,9 @@ def fetch_path(meta: dict[str, Any], rel: str, cfg: ArchiveConfig) -> int:
             "--no-progress",
         ]
     )
-    target = abs_path(rel)
-    if not target.exists():
+    if not dest.exists():
         raise FileNotFoundError(f"Batch download completed but {rel} missing")
-    return _dir_size(target)
+    return _dir_size(dest)
 
 
 def upload_path(rel: str, cfg: ArchiveConfig, *, blob_prefix: str | None = None) -> str:
