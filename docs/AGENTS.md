@@ -16,9 +16,10 @@ Check first:
 
 ```bash
 cloud-vfs resolve <path>
+cloud-vfs preflight <paths...>    # or: cloud-vfs ensure --check-only <paths...>
 ```
 
-(`resolve` returns `is_ref`, `placement`: `inline` or `sidecar`.)
+(`resolve` returns `is_ref`, `placement`, `archive_role`, `context_hints` for Mac vs GPU.)
 
 ## After creating large outputs
 

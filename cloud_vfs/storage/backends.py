@@ -242,9 +242,10 @@ def upload_path(
     *,
     blob_prefix: str | None = None,
     progress_label: str | None = None,
+    source_path: Path | None = None,
 ) -> str:
     rel = normalize_rel(rel)
-    src = abs_path(rel)
+    src = source_path if source_path is not None else abs_path(rel)
     if not src.exists():
         raise FileNotFoundError(rel)
     key_base = (blob_prefix or rel).rstrip("/")

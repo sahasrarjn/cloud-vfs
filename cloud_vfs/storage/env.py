@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 from cloud_vfs.project import config_path, secrets_path
 
@@ -28,9 +29,13 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     return out
 
 
-def load_cloud_env() -> dict[str, str]:
-    env = _parse_env_file(config_path())
-    env.update(_parse_env_file(secrets_path()))
+def load_cloud_env(
+    *,
+    config: Path | None = None,
+    secrets: Path | None = None,
+) -> dict[str, str]:
+    env = _parse_env_file(config or config_path())
+    env.update(_parse_env_file(secrets or secrets_path()))
     for prefix in ("AZ_", "AWS_", "LOCAL_", "REMOTE_", "CLOUD_VFS_"):
         env.update({k: v for k, v in os.environ.items() if k.startswith(prefix)})
     env.update(
@@ -48,7 +53,37 @@ def load_azure_env() -> dict[str, str]:
     return load_cloud_env()
 
 
+ARCHIVE_ROLE_LABELS: dict[str, str] = {
+    "local_archive": "mac_archive",
+    "remote_staging": "gpu_staging",
+}
+
+BLOB_ROLE_ALIASES: dict[str, str] = {
+    "archive": "local_archive",
+    "mac_archive": "local_archive",
+    "local": "local_archive",
+    "staging": "remote_staging",
+    "gpu_staging": "remote_staging",
+    "gpu": "remote_staging",
+    "remote": "remote_staging",
+    "runpod_staging": "remote_staging",
+}
+
+
 def normalize_archive(archive: str) -> str:
-    if archive == "runpod_staging":
-        return "remote_staging"
-    return archive
+    return BLOB_ROLE_ALIASES.get(archive, archive)
+
+
+def archive_from_entry(entry: dict[str, Any] | None, default: str = "local_archive") -> str:
+    if not entry:
+        return normalize_archive(default)
+    raw = entry.get("blob_role") or entry.get("archive") or default
+    return normalize_archive(str(raw))
+
+
+def archive_context_hints(rel: str, archive: str) -> dict[str, str]:
+    archive = normalize_archive(archive)
+    return {
+        "mac": f"cloud-vfs ensure {rel}",
+        "gpu": f"cloud-vfs ensure-remote --dest-root /workspace --archive {archive} {rel}",
+    }

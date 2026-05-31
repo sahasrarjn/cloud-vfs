@@ -37,6 +37,14 @@ cloud-vfs register data/generated/new_run
 # Fetch (verifies sha256 vs inventory by default)
 cloud-vfs ensure data/generated/old_run
 cloud-vfs ensure data/embeddings.npy
+cloud-vfs ensure --check-only data/train.csv   # preflight before GPU job
+cloud-vfs ensure data/foo.npy --archive remote_staging
+
+# GPU / remote host (no Mac inventory) — see GPU_WORKFLOW.md
+cloud-vfs ensure-remote --dest-root /workspace --archive remote_staging data/foo.npy
+
+# One-shot checkpoint upload after SCP
+cloud-vfs ingest /tmp/model_best.pth --as research/runs/model_best.pth
 
 # Safe delete check (blocks prod-bucket hallucinations)
 cloud-vfs guard data/embeddings.npy

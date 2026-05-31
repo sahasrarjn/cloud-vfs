@@ -6,6 +6,7 @@ from typing import Any
 
 from cloud_vfs.project import fetch_cmd
 
+from .env import archive_from_entry
 from .paths import STUB_NAME, abs_path, normalize_rel, stub_file_for
 
 CVFS_MARKER = 1
@@ -198,7 +199,7 @@ def resolve_meta(rel: str, entry: dict[str, Any] | None) -> dict[str, Any]:
         raise FileNotFoundError(f"No manifest entry or stub for {rel}")
     meta: dict[str, Any] = {
         "manifest_id": entry.get("id"),
-        "archive": entry.get("archive", "local_archive"),
+        "archive": archive_from_entry(entry),
     }
     if entry.get("blob"):
         meta["blob"] = entry["blob"]

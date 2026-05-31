@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.5
+
+### Hybrid GPU workflow ([#11](https://github.com/sahasrarjn/cloud-vfs/issues/11))
+
+- **`cloud-vfs ensure-remote`** — materialize manifest paths or inline `cvfs` refs under `--dest-root` without Mac inventory (GPU/RunPod bootstrap)
+- **`cloud-vfs preflight`** and **`ensure --check-only`** — batch exit non-zero when stubs/refs still need fetch
+- **`cloud-vfs ingest`** — one-shot upload from an arbitrary local file (e.g. SCP checkpoint) to archive + manifest + inline ref
+- **Dual archive clarity** — manifest `blob_role` (`staging` / `archive` aliases); `resolve` adds `archive_role` and `context_hints` (Mac vs GPU commands)
+- **`ensure --archive`** — override archive backend per fetch
+- Docs: [GPU_WORKFLOW.md](docs/GPU_WORKFLOW.md)
+
 ## 0.5.4
 
 ### Bug fixes
