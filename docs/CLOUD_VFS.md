@@ -2,6 +2,8 @@
 
 Large files live in cloud storage. The machine keeps **inline refs** (single files at the original path) and **`.cloudstub`** directory pointers, plus a **per-file inventory** under `.cloud-vfs/index/`.
 
+Contributors: keep CLI and docs **generic** ([DESIGN.md](DESIGN.md)). **Source** = cloud archive; **target** = filesystem ([SOURCE_TARGET.md](SOURCE_TARGET.md)).
+
 ## Architecture
 
 ```

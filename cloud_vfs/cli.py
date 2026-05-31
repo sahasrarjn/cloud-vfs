@@ -962,10 +962,18 @@ def main(argv: list[str] | None = None) -> int:
     p_offload = sub.add_parser("offload", help="Upload + stub (explicit paths; use --dry-run first)")
     p_offload.add_argument("paths", nargs="*")
     p_offload.add_argument("--dry-run", action="store_true")
-    p_offload.add_argument(
-        "--archive",
+    p_offload_source = p_offload.add_mutually_exclusive_group()
+    p_offload_source.add_argument(
+        "--source",
+        dest="source_archive",
         choices=["local_archive", "remote_staging", "runpod_staging"],
-        help="runpod_staging is a legacy alias for remote_staging",
+        help="Cloud backend to upload to",
+    )
+    p_offload_source.add_argument(
+        "--archive",
+        dest="source_archive",
+        choices=["local_archive", "remote_staging", "runpod_staging"],
+        help=argparse.SUPPRESS,
     )
     p_offload.add_argument(
         "--verify-only",
@@ -1064,7 +1072,9 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_offload(
             args.paths,
             dry_run=args.dry_run,
-            archive_override=normalize_archive(args.archive) if args.archive else None,
+            archive_override=(
+                normalize_archive(args.source_archive) if getattr(args, "source_archive", None) else None
+            ),
             delete_local=args.delete_local,
             verify_only=args.verify_only,
             no_resume=args.no_resume,

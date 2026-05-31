@@ -1,3 +1,5 @@
+"""Preflight, cross-root ensure, and ingest — generic source/target materialization."""
+
 from __future__ import annotations
 
 import json

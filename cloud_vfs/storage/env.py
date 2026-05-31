@@ -61,7 +61,7 @@ BLOB_ROLE_ALIASES: dict[str, str] = {
     "staging": "remote_staging",
     "remote": "remote_staging",
     "runpod_staging": "remote_staging",
-    # legacy aliases (still accepted)
+    # legacy aliases (parsed only; do not document in new CLI help)
     "mac_archive": "local_archive",
     "gpu_staging": "remote_staging",
     "gpu": "remote_staging",

@@ -12,6 +12,8 @@ Install: `pip install cloud-vfs` (or `pip install git+https://github.com/sahasra
 
 Large files live in cloud storage. Local disk holds **inline refs** (single files at the original path) or **`.cloudstub`** directory pointers, plus a **per-file inventory** under `.cloud-vfs/index/`.
 
+**Generic model:** **source** = cloud archive (`--source`), **target** = where files materialize (project root or `--target-root`). Do not add GPU/Mac/product-specific APIs — see repo [docs/DESIGN.md](https://github.com/sahasrarjn/cloud-vfs/blob/main/docs/DESIGN.md).
+
 ## Two layers
 
 | Layer | File | Who edits |
@@ -30,9 +32,11 @@ Large **`data/` artifacts only** (default ≥ 50 MB). Code excluded — see `inv
 | Verify setup | `cloud-vfs doctor` / `doctor --roundtrip` |
 | Before deleting local files | `cloud-vfs guard <path>` (required) |
 | Fetch + verify | `cloud-vfs ensure <path>` |
+| Preflight stubs | `cloud-vfs preflight <paths>` |
+| Materialize at other root | `cloud-vfs ensure --target-root <DIR> [--source ARCHIVE] <paths>` |
+| Ingest external file | `cloud-vfs ingest --source <file> --target <rel>` |
 | Find offload candidates | `cloud-vfs scan` / `scan --add` |
 | Index new local files | `cloud-vfs register <path>` |
-| Fetch (file or tree) | `cloud-vfs ensure <path>` |
 | Inspect blob path | `cloud-vfs resolve <path>` |
 | Status + drift | `cloud-vfs status --drift` |
 | Audit | `cloud-vfs reconcile` |

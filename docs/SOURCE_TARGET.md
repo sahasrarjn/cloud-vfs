@@ -1,5 +1,7 @@
 # Source and target
 
+> **Contributors & agents:** cloud-vfs stays **generic** — no GPU/Mac/consumer-specific commands or docs. Read [DESIGN.md](DESIGN.md) before changing CLI or behavior.
+
 cloud-vfs separates **where bytes live in cloud storage** (source) from **where materialized files land on disk** (target).
 
 | Concept | CLI flag | Default |
