@@ -133,7 +133,7 @@ def _check_credentials(provider: str, env: dict[str, str], cfg) -> CheckResult:
             cmd += ["--profile", cfg.profile]
         if cfg.region:
             cmd += ["--region", cfg.region]
-        cmd += ["sts", "get-caller-identity", "-o", "json"]
+        cmd += ["sts", "get-caller-identity", "--output", "json"]
         code, out = _run_quiet(cmd)
         if code != 0:
             return CheckResult("credentials", "fail", out or "aws sts get-caller-identity failed")

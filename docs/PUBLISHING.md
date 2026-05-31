@@ -54,3 +54,19 @@ twine upload dist/*
 ```
 
 Use a PyPI API token with `twine` or `uv publish`.
+
+## Until `pip install cloud-vfs` works on PyPI
+
+As of the last publish prep check, **the project is not on PyPI** (`https://pypi.org/pypi/cloud-vfs/` returns 404). Use:
+
+```bash
+pip install "git+https://github.com/sahasrarjn/cloud-vfs.git"
+```
+
+(or a release tag: `pip install "git+https://github.com/sahasrarjn/cloud-vfs.git@v0.5.0"`).
+
+**Before the first GitHub release publish:** align `pyproject.toml` `version` and `cloud_vfs/__init__.py` `__version__` (they must match). Create the GitHub **environment** named `pypi` (repo currently has no environments). On PyPI, register the project and configure trusted publishing for `sahasrarjn/cloud-vfs` / `.github/workflows/publish.yml` / environment `pypi`.
+
+**First release after setup:** tag the aligned version (e.g. `v0.5.5`), push the tag, then **Releases → Publish release** on that tag. The workflow has never run (`publish.yml` has no completed runs until a release is published).
+
+Local artifacts were verified with `python -m build` and `twine check dist/*` (passes for wheel + sdist).

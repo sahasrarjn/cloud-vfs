@@ -2,6 +2,11 @@
 
 ## 0.5.5
 
+### Bug fixes
+
+- **`doctor`** — AWS CLI v2 credentials check uses `--output json` (was `-o json`, which fails on CLI v2)
+- **`config.env`** — `AWS_LOCAL_BUCKET` / region / profile in config.env override manifest placeholders (fixes `cloud-vfs try` when manifest still has `your-test-bucket`)
+
 ### Source / target materialize ([#11](https://github.com/sahasrarjn/cloud-vfs/issues/11))
 
 - **`cloud-vfs ensure --target-root`** — materialize cloud **source** into an alternate filesystem **target** (no project inventory on that host)

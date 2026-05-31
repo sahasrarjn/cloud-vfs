@@ -64,17 +64,21 @@ def resolve_archive(
         prefix = "AWS_LOCAL" if archive_name == "local_archive" else "AWS_REMOTE"
         legacy = "AWS"
         bucket = _first(
-            block.get("bucket"),
             env.get(f"{prefix}_BUCKET"),
             env.get(f"{legacy}_BUCKET") if archive_name == "local_archive" else None,
+            block.get("bucket"),
         )
         region = _first(
-            block.get("region"),
             env.get(f"{prefix}_REGION"),
             env.get("AWS_REGION"),
             env.get("AWS_DEFAULT_REGION"),
+            block.get("region"),
         )
-        profile = _first(block.get("profile"), env.get(f"{prefix}_PROFILE"), env.get("AWS_PROFILE"))
+        profile = _first(
+            env.get(f"{prefix}_PROFILE"),
+            env.get("AWS_PROFILE"),
+            block.get("profile"),
+        )
         if not bucket:
             raise KeyError(f"{prefix}_BUCKET or manifest {archive_name}.bucket")
         return ArchiveConfig(
