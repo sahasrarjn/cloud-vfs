@@ -15,6 +15,7 @@ def find_project_root(start: Path | None = None) -> Path:
     for candidate in [here, *here.parents]:
         if (candidate / ".cloud-vfs").is_dir():
             return candidate
+        # Optional consumer layouts (not required by cloud-vfs core)
         if (candidate / "infra" / "blob-manifest.json").exists():
             return candidate
         if (candidate / ".git").exists():
@@ -33,7 +34,7 @@ def config_path() -> Path:
     root = project_root()
     for candidate in (
         root / ".cloud-vfs" / "config.env",
-        root / "runpod" / "config.env",
+        root / "runpod" / "config.env",  # legacy optional layout
     ):
         if candidate.exists():
             return candidate
@@ -46,7 +47,7 @@ def secrets_path() -> Path:
     root = project_root()
     for candidate in (
         root / ".cloud-vfs" / "secrets.env",
-        root / "runpod" / "secrets.env",
+        root / "runpod" / "secrets.env",  # legacy optional layout
     ):
         if candidate.exists():
             return candidate

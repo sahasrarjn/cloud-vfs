@@ -17,7 +17,7 @@ from cloud_vfs.guard import assess_delete_safety, cmd_guard
 from cloud_vfs.scaffold import cmd_init
 from cloud_vfs.scan import cmd_scan
 from cloud_vfs.try_demo import cmd_try
-from cloud_vfs.storage.env import load_cloud_env, normalize_archive
+from cloud_vfs.storage.env import archive_from_entry, load_cloud_env, normalize_archive, source_target_hints
 from cloud_vfs.storage.errors import CloudStorageError, CloudVfsError, PathOutsideProjectError
 from cloud_vfs.storage.fetch import fetch_path, manifest_with_provider, resolve_archive, upload_path
 from cloud_vfs.storage.inventory import (
@@ -229,7 +229,38 @@ def _safe_fetch(
     return nbytes
 
 
-def cmd_ensure(paths: list[str], *, verify: bool) -> int:
+def cmd_ensure(
+    paths: list[str],
+    *,
+    verify: bool,
+    check_only: bool = False,
+    source_archive: str | None = None,
+    target_root: Path | None = None,
+    paths_file: Path | None = None,
+    manifest_file: Path | None = None,
+    config_env: Path | None = None,
+    secrets_env: Path | None = None,
+    ref_root: Path | None = None,
+) -> int:
+    if check_only:
+        from cloud_vfs.materialize import cmd_preflight
+
+        return cmd_preflight(paths, as_json=False)
+
+    if target_root is not None:
+        from cloud_vfs.materialize import cmd_ensure_at_target
+
+        return cmd_ensure_at_target(
+            paths,
+            target_root=target_root,
+            source_archive=source_archive,
+            manifest_file=manifest_file,
+            paths_file=paths_file,
+            config_env=config_env,
+            secrets_env=secrets_env,
+            ref_root=ref_root,
+        )
+
     try:
         manifest = load_manifest()
     except (FileNotFoundError, ValueError) as exc:
@@ -254,6 +285,8 @@ def cmd_ensure(paths: list[str], *, verify: bool) -> int:
         except FileNotFoundError as exc:
             _print_error(exc)
             return 1
+        if source_archive:
+            meta["archive"] = normalize_archive(source_archive)
         archive = meta.get("archive", "local_archive")
         env = load_cloud_env()
         prov = meta.get("provider") or (entry or {}).get("provider")
@@ -310,20 +343,32 @@ def cmd_resolve(path: str) -> int:
         "safe_to_delete_local": safety["safe_to_delete_local"],
         "delete_safety_reasons": safety["reasons"],
     }
+    source_archive = (stub or {}).get("archive") or archive_from_entry(entry)
+    out["source"] = {"archive": source_archive}
+    out["target"] = source_target_hints(rel, source_archive)["target"]
+    out["hints"] = source_target_hints(rel, source_archive)
     if entry:
         out["entry"] = {
             k: entry.get(k)
-            for k in ("id", "archive", "provider", "status", "blob", "blob_prefix", "uploaded")
+            for k in (
+                "id",
+                "archive",
+                "blob_role",
+                "provider",
+                "status",
+                "blob",
+                "blob_prefix",
+                "uploaded",
+            )
             if entry.get(k) is not None
         }
     if stub:
         out["stub"] = stub
     if not local_present:
         out["fetch_cmd"] = fetch_cmd(rel)
-        archive = (stub or {}).get("archive") or (entry or {}).get("archive") or "local_archive"
         env = load_cloud_env()
         try:
-            cfg = resolve_archive(env, manifest, archive)
+            cfg = resolve_archive(env, manifest, source_archive)
             blob = (stub or {}).get("blob") or (entry or {}).get("blob")
             prefix = (stub or {}).get("blob_prefix") or (entry or {}).get("blob_prefix")
             out["provider"] = cfg.provider
@@ -768,12 +813,55 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_try.add_argument("--force", action="store_true", help="Overwrite an existing demo tree")
 
-    p_ensure = sub.add_parser("ensure", help="Fetch from blob if stub or missing")
+    p_ensure = sub.add_parser(
+        "ensure",
+        help="Materialize cloud source into target (project root or --target-root)",
+    )
     p_ensure.add_argument("paths", nargs="+")
+    p_ensure.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Exit non-zero if any path is still a stub/ref (preflight, no download)",
+    )
     p_ensure.add_argument(
         "--no-verify",
         action="store_true",
-        help="Skip sha256 check against inventory after download",
+        help="Skip sha256 check against inventory after download (project target only)",
+    )
+    p_source = p_ensure.add_mutually_exclusive_group()
+    p_source.add_argument(
+        "--source",
+        dest="source_archive",
+        choices=["local_archive", "remote_staging", "runpod_staging"],
+        help="Cloud blob backend to read from (alias: --archive)",
+    )
+    p_source.add_argument(
+        "--archive",
+        dest="source_archive",
+        choices=["local_archive", "remote_staging", "runpod_staging"],
+        help=argparse.SUPPRESS,
+    )
+    p_ensure.add_argument(
+        "--target-root",
+        type=Path,
+        help="Filesystem root for materialized files (default: project root)",
+    )
+    p_ensure.add_argument(
+        "--paths-file",
+        type=Path,
+        help="Newline-separated paths (with --target-root)",
+    )
+    p_ensure.add_argument(
+        "--manifest",
+        type=Path,
+        help="Manifest JSON for blob mapping (with --target-root)",
+    )
+    p_ensure.add_argument("--config-env", type=Path, help="Override config.env (with --target-root)")
+    p_ensure.add_argument("--secrets-env", type=Path, help="Override secrets.env (with --target-root)")
+    p_ensure.add_argument(
+        "--ref-root",
+        type=Path,
+        help="Project root for reading inline cvfs refs (with --target-root)",
     )
 
     p_resolve = sub.add_parser("resolve", help="JSON fetch instructions")
@@ -823,13 +911,69 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("prune", help="Remove inventory rows below min size")
 
+    p_preflight = sub.add_parser(
+        "preflight",
+        help="Exit non-zero if paths are still cloud stubs/refs",
+    )
+    p_preflight.add_argument("paths", nargs="+")
+    p_preflight.add_argument("--json", action="store_true")
+
+    p_ingest = sub.add_parser(
+        "ingest",
+        help="Upload local source file to cloud target path (one-shot, no prior register)",
+    )
+    p_ingest.add_argument(
+        "--source",
+        type=Path,
+        required=True,
+        help="Local file path (need not be under project root)",
+    )
+    p_ingest.add_argument(
+        "--target",
+        required=True,
+        help="Project-relative blob key / manifest path",
+    )
+    p_ingest_source = p_ingest.add_mutually_exclusive_group()
+    p_ingest_source.add_argument(
+        "--source-archive",
+        default="local_archive",
+        dest="source_archive",
+        choices=["local_archive", "remote_staging", "runpod_staging"],
+        help="Cloud backend to write to",
+    )
+    p_ingest_source.add_argument(
+        "--archive",
+        dest="source_archive",
+        choices=["local_archive", "remote_staging", "runpod_staging"],
+        help=argparse.SUPPRESS,
+    )
+    p_ingest.add_argument("--dry-run", action="store_true")
+    p_ingest.add_argument(
+        "--no-stub",
+        action="store_true",
+        help="Upload + manifest only; do not write inline ref at --target path",
+    )
+    p_ingest.add_argument(
+        "--no-index",
+        action="store_true",
+        help="Skip inventory row (manifest only)",
+    )
+
     p_offload = sub.add_parser("offload", help="Upload + stub (explicit paths; use --dry-run first)")
     p_offload.add_argument("paths", nargs="*")
     p_offload.add_argument("--dry-run", action="store_true")
-    p_offload.add_argument(
-        "--archive",
+    p_offload_source = p_offload.add_mutually_exclusive_group()
+    p_offload_source.add_argument(
+        "--source",
+        dest="source_archive",
         choices=["local_archive", "remote_staging", "runpod_staging"],
-        help="runpod_staging is a legacy alias for remote_staging",
+        help="Cloud backend to upload to",
+    )
+    p_offload_source.add_argument(
+        "--archive",
+        dest="source_archive",
+        choices=["local_archive", "remote_staging", "runpod_staging"],
+        help=argparse.SUPPRESS,
     )
     p_offload.add_argument(
         "--verify-only",
@@ -873,7 +1017,36 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "try":
         return cmd_try(args.path, force=args.force)
     if args.cmd == "ensure":
-        return cmd_ensure(args.paths, verify=not args.no_verify)
+        source = (
+            normalize_archive(args.source_archive) if getattr(args, "source_archive", None) else None
+        )
+        return cmd_ensure(
+            args.paths,
+            verify=not args.no_verify,
+            check_only=args.check_only,
+            source_archive=source,
+            target_root=getattr(args, "target_root", None),
+            paths_file=getattr(args, "paths_file", None),
+            manifest_file=getattr(args, "manifest", None),
+            config_env=getattr(args, "config_env", None),
+            secrets_env=getattr(args, "secrets_env", None),
+            ref_root=getattr(args, "ref_root", None),
+        )
+    if args.cmd == "preflight":
+        from cloud_vfs.materialize import cmd_preflight
+
+        return cmd_preflight(args.paths, as_json=args.json)
+    if args.cmd == "ingest":
+        from cloud_vfs.materialize import cmd_ingest
+
+        return cmd_ingest(
+            args.source,
+            args.target,
+            source_archive=normalize_archive(args.source_archive),
+            dry_run=args.dry_run,
+            emit_stub=not args.no_stub,
+            index_inventory=not args.no_index,
+        )
     if args.cmd == "resolve":
         return cmd_resolve(args.path)
     if args.cmd == "status":
@@ -899,7 +1072,9 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_offload(
             args.paths,
             dry_run=args.dry_run,
-            archive_override=normalize_archive(args.archive) if args.archive else None,
+            archive_override=(
+                normalize_archive(args.source_archive) if getattr(args, "source_archive", None) else None
+            ),
             delete_local=args.delete_local,
             verify_only=args.verify_only,
             no_resume=args.no_resume,

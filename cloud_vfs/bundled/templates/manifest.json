@@ -4,7 +4,7 @@
   "architecture": "Optional dual archive — independent backends (azure and/or aws)",
   "local_archive": {
     "provider": "azure",
-    "role": "Long-term storage near the developer machine",
+    "role": "Primary archive (long-term catalog)",
     "account": "YOUR_AZURE_ACCOUNT",
     "container": "data",
     "bucket": "your-s3-bucket-if-aws",
@@ -17,15 +17,15 @@
   },
   "remote_staging": {
     "provider": "azure",
-    "role": "Optional second archive (any provider, any region)",
+    "role": "Secondary archive (optional; any provider, any region)",
     "account": "YOUR_REMOTE_AZURE_ACCOUNT",
     "container": "data",
     "bucket": "your-remote-s3-bucket-if-aws",
     "region": "YOUR_REMOTE_REGION",
     "base_url": "https://YOUR_REMOTE_AZURE_ACCOUNT.blob.core.windows.net/data",
     "commands": {
-      "offload": "cloud-vfs offload --archive remote_staging <path>",
-      "fetch": "cloud-vfs ensure <path>"
+      "offload": "cloud-vfs offload --source remote_staging <path>",
+      "fetch": "cloud-vfs ensure --source remote_staging <path>"
     }
   },
   "lifecycle": "ensure when needed → work locally → offload --dry-run → offload chosen paths",

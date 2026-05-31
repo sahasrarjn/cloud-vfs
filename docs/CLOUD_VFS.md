@@ -2,6 +2,8 @@
 
 Large files live in cloud storage. The machine keeps **inline refs** (single files at the original path) and **`.cloudstub`** directory pointers, plus a **per-file inventory** under `.cloud-vfs/index/`.
 
+Contributors: keep CLI and docs **generic** ([DESIGN.md](DESIGN.md)). **Source** = cloud archive; **target** = filesystem ([SOURCE_TARGET.md](SOURCE_TARGET.md)).
+
 ## Architecture
 
 ```
@@ -37,6 +39,14 @@ cloud-vfs register data/generated/new_run
 # Fetch (verifies sha256 vs inventory by default)
 cloud-vfs ensure data/generated/old_run
 cloud-vfs ensure data/embeddings.npy
+cloud-vfs ensure --check-only data/train.csv
+cloud-vfs ensure data/foo.npy --source remote_staging
+
+# Custom target root (no project inventory on host) — see SOURCE_TARGET.md
+cloud-vfs ensure --target-root /workspace --source remote_staging data/foo.npy
+
+# Local source file → cloud target path
+cloud-vfs ingest --source /tmp/model_best.pth --target research/runs/model_best.pth
 
 # Safe delete check (blocks prod-bucket hallucinations)
 cloud-vfs guard data/embeddings.npy

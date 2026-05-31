@@ -1,6 +1,8 @@
 # cloud-vfs
 
-Manual **cloud blob virtual filesystem** for ML and research repos. Keep your laptop small: large artifacts live in Azure Blob or S3, local disk keeps tiny **inline refs** (same path) or `.cloudstub` directory pointers, and a **machine-maintained per-file inventory** tracks explicit cloud paths.
+Manual **cloud blob virtual filesystem** for repos with large artifacts. Keep primary disks small: data lives in Azure Blob or S3, local paths keep tiny **inline refs** (same path) or `.cloudstub` directory pointers, and a **machine-maintained per-file inventory** tracks explicit cloud paths.
+
+**Design:** generic **source** (cloud archive) and **target** (filesystem) — see [docs/DESIGN.md](docs/DESIGN.md).
 
 Works with **Cursor / Claude agents** or plain shell + [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) / [AWS CLI](https://aws.amazon.com/cli/).
 
@@ -12,10 +14,10 @@ Works with **Cursor / Claude agents** or plain shell + [Azure CLI](https://learn
 |-----------|----------------|
 | Lean repo; data stays out of git | Data lineage tied to git commits |
 | Agent-safe dry-run offload | Heavier toolchain |
-| Dual archive (local + cloud staging) | Single-remote patterns |
+| Dual archive (primary + optional secondary backend) | Single-remote patterns |
 | **Large `data/` only** inventory | Tracks everything you add |
 
-Best for: **laptop hygiene + lazy fetch + explicit offload** on research repos with big embeddings, datasets, and checkpoints.
+Best for: **disk hygiene + lazy fetch + explicit offload** when projects store large files under `data/` (or policy-defined prefixes).
 
 ## Features
 
@@ -94,7 +96,9 @@ Inventory rows are created by **`offload`**, **`register`**, and **`reconcile --
 |---------|-------------|
 | `cloud-vfs guard <paths>` | Block unsafe local deletes (not managed by cloud-vfs) |
 | `cloud-vfs doctor [--probe] [--roundtrip]` | Verify install, config, CLI, and cloud access |
-| `cloud-vfs ensure [--no-verify]` | Fetch from cloud; default verifies sha256 vs inventory |
+| `cloud-vfs ensure [--source A] [--target-root DIR] [--check-only]` | Materialize cloud source → project or custom target |
+| `cloud-vfs preflight <paths>` | Exit non-zero if stubs/refs need `ensure` |
+| `cloud-vfs ingest --source FILE --target REL` | One-shot upload from arbitrary local file |
 | `cloud-vfs try [--path DIR]` | Create sandbox demo project (default `./cloud-vfs-try`) |
 | `cloud-vfs init [--path DIR] [--skill]` | Scaffold `.cloud-vfs/` in any folder |
 | `cloud-vfs scan [--add] [--prefix P]` | Find large local files; optionally add to manifest |
@@ -148,7 +152,7 @@ Set `LOCAL_PROVIDER=azure` or `aws` in `.cloud-vfs/config.env`.
 
 **AWS:** `AWS_LOCAL_BUCKET`, `AWS_LOCAL_REGION` (uses `aws` CLI credentials)
 
-Manifest archive keys: `local_archive`, `remote_staging` (`runpod_staging` is a legacy alias).
+Manifest archive keys: `local_archive` (primary), `remote_staging` (secondary). See [docs/SOURCE_TARGET.md](docs/SOURCE_TARGET.md).
 
 ## Agents
 

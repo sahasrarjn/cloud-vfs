@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.5
+
+### Source / target materialize ([#11](https://github.com/sahasrarjn/cloud-vfs/issues/11))
+
+- **`cloud-vfs ensure --target-root`** — materialize cloud **source** into an alternate filesystem **target** (no project inventory on that host)
+- **`cloud-vfs ensure --source`** — choose blob backend (`local_archive` / `remote_staging`; `--archive` kept as hidden alias)
+- **`cloud-vfs preflight`** and **`ensure --check-only`** — batch exit non-zero when stubs/refs still need fetch
+- **`cloud-vfs ingest --source … --target …`** — one-shot upload from an arbitrary local file to cloud + manifest + inline ref
+- **Dual archive clarity** — manifest `blob_role` (`primary` / `staging` aliases); `resolve` emits `source`, `target`, and `hints`
+- Docs: [SOURCE_TARGET.md](docs/SOURCE_TARGET.md), [DESIGN.md](docs/DESIGN.md) (generic source/target; no use-case-specific commands)
+
 ## 0.5.4
 
 ### Bug fixes
