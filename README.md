@@ -94,10 +94,9 @@ Inventory rows are created by **`offload`**, **`register`**, and **`reconcile --
 |---------|-------------|
 | `cloud-vfs guard <paths>` | Block unsafe local deletes (not managed by cloud-vfs) |
 | `cloud-vfs doctor [--probe] [--roundtrip]` | Verify install, config, CLI, and cloud access |
-| `cloud-vfs ensure [--check-only] [--archive A] [--no-verify]` | Fetch from cloud; preflight or archive override |
-| `cloud-vfs ensure-remote --dest-root DIR` | GPU/pod materialize without Mac inventory ([#11](docs/GPU_WORKFLOW.md)) |
+| `cloud-vfs ensure [--source A] [--target-root DIR] [--check-only]` | Materialize cloud source → project or custom target |
 | `cloud-vfs preflight <paths>` | Exit non-zero if stubs/refs need `ensure` |
-| `cloud-vfs ingest <source> --as <rel>` | One-shot upload from arbitrary file (e.g. SCP checkpoint) |
+| `cloud-vfs ingest --source FILE --target REL` | One-shot upload from arbitrary local file |
 | `cloud-vfs try [--path DIR]` | Create sandbox demo project (default `./cloud-vfs-try`) |
 | `cloud-vfs init [--path DIR] [--skill]` | Scaffold `.cloud-vfs/` in any folder |
 | `cloud-vfs scan [--add] [--prefix P]` | Find large local files; optionally add to manifest |

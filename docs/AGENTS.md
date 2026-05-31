@@ -19,7 +19,7 @@ cloud-vfs resolve <path>
 cloud-vfs preflight <paths...>    # or: cloud-vfs ensure --check-only <paths...>
 ```
 
-(`resolve` returns `is_ref`, `placement`, `archive_role`, `context_hints` for Mac vs GPU.)
+(`resolve` returns `is_ref`, `placement`, `source`, `target`, and `hints`.)
 
 ## After creating large outputs
 

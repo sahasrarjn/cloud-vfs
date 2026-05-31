@@ -17,13 +17,7 @@ from cloud_vfs.guard import assess_delete_safety, cmd_guard
 from cloud_vfs.scaffold import cmd_init
 from cloud_vfs.scan import cmd_scan
 from cloud_vfs.try_demo import cmd_try
-from cloud_vfs.storage.env import (
-    ARCHIVE_ROLE_LABELS,
-    archive_context_hints,
-    archive_from_entry,
-    load_cloud_env,
-    normalize_archive,
-)
+from cloud_vfs.storage.env import archive_from_entry, load_cloud_env, normalize_archive, source_target_hints
 from cloud_vfs.storage.errors import CloudStorageError, CloudVfsError, PathOutsideProjectError
 from cloud_vfs.storage.fetch import fetch_path, manifest_with_provider, resolve_archive, upload_path
 from cloud_vfs.storage.inventory import (
@@ -240,12 +234,32 @@ def cmd_ensure(
     *,
     verify: bool,
     check_only: bool = False,
-    archive_override: str | None = None,
+    source_archive: str | None = None,
+    target_root: Path | None = None,
+    paths_file: Path | None = None,
+    manifest_file: Path | None = None,
+    config_env: Path | None = None,
+    secrets_env: Path | None = None,
+    ref_root: Path | None = None,
 ) -> int:
     if check_only:
-        from cloud_vfs.gpu_workflow import cmd_preflight
+        from cloud_vfs.materialize import cmd_preflight
 
         return cmd_preflight(paths, as_json=False)
+
+    if target_root is not None:
+        from cloud_vfs.materialize import cmd_ensure_at_target
+
+        return cmd_ensure_at_target(
+            paths,
+            target_root=target_root,
+            source_archive=source_archive,
+            manifest_file=manifest_file,
+            paths_file=paths_file,
+            config_env=config_env,
+            secrets_env=secrets_env,
+            ref_root=ref_root,
+        )
 
     try:
         manifest = load_manifest()
@@ -271,8 +285,8 @@ def cmd_ensure(
         except FileNotFoundError as exc:
             _print_error(exc)
             return 1
-        if archive_override:
-            meta["archive"] = normalize_archive(archive_override)
+        if source_archive:
+            meta["archive"] = normalize_archive(source_archive)
         archive = meta.get("archive", "local_archive")
         env = load_cloud_env()
         prov = meta.get("provider") or (entry or {}).get("provider")
@@ -329,10 +343,10 @@ def cmd_resolve(path: str) -> int:
         "safe_to_delete_local": safety["safe_to_delete_local"],
         "delete_safety_reasons": safety["reasons"],
     }
-    archive = (stub or {}).get("archive") or archive_from_entry(entry)
-    out["archive"] = archive
-    out["archive_role"] = ARCHIVE_ROLE_LABELS.get(archive, archive)
-    out["context_hints"] = archive_context_hints(rel, archive)
+    source_archive = (stub or {}).get("archive") or archive_from_entry(entry)
+    out["source"] = {"archive": source_archive}
+    out["target"] = source_target_hints(rel, source_archive)["target"]
+    out["hints"] = source_target_hints(rel, source_archive)
     if entry:
         out["entry"] = {
             k: entry.get(k)
@@ -354,7 +368,7 @@ def cmd_resolve(path: str) -> int:
         out["fetch_cmd"] = fetch_cmd(rel)
         env = load_cloud_env()
         try:
-            cfg = resolve_archive(env, manifest, archive)
+            cfg = resolve_archive(env, manifest, source_archive)
             blob = (stub or {}).get("blob") or (entry or {}).get("blob")
             prefix = (stub or {}).get("blob_prefix") or (entry or {}).get("blob_prefix")
             out["provider"] = cfg.provider
@@ -799,7 +813,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_try.add_argument("--force", action="store_true", help="Overwrite an existing demo tree")
 
-    p_ensure = sub.add_parser("ensure", help="Fetch from blob if stub or missing")
+    p_ensure = sub.add_parser(
+        "ensure",
+        help="Materialize cloud source into target (project root or --target-root)",
+    )
     p_ensure.add_argument("paths", nargs="+")
     p_ensure.add_argument(
         "--check-only",
@@ -809,12 +826,42 @@ def main(argv: list[str] | None = None) -> int:
     p_ensure.add_argument(
         "--no-verify",
         action="store_true",
-        help="Skip sha256 check against inventory after download",
+        help="Skip sha256 check against inventory after download (project target only)",
+    )
+    p_source = p_ensure.add_mutually_exclusive_group()
+    p_source.add_argument(
+        "--source",
+        dest="source_archive",
+        choices=["local_archive", "remote_staging", "runpod_staging"],
+        help="Cloud blob backend to read from (alias: --archive)",
+    )
+    p_source.add_argument(
+        "--archive",
+        dest="source_archive",
+        choices=["local_archive", "remote_staging", "runpod_staging"],
+        help=argparse.SUPPRESS,
     )
     p_ensure.add_argument(
-        "--archive",
-        choices=["local_archive", "remote_staging", "runpod_staging"],
-        help="Override archive for fetch (default: entry/stub archive)",
+        "--target-root",
+        type=Path,
+        help="Filesystem root for materialized files (default: project root)",
+    )
+    p_ensure.add_argument(
+        "--paths-file",
+        type=Path,
+        help="Newline-separated paths (with --target-root)",
+    )
+    p_ensure.add_argument(
+        "--manifest",
+        type=Path,
+        help="Manifest JSON for blob mapping (with --target-root)",
+    )
+    p_ensure.add_argument("--config-env", type=Path, help="Override config.env (with --target-root)")
+    p_ensure.add_argument("--secrets-env", type=Path, help="Override secrets.env (with --target-root)")
+    p_ensure.add_argument(
+        "--ref-root",
+        type=Path,
+        help="Project root for reading inline cvfs refs (with --target-root)",
     )
 
     p_resolve = sub.add_parser("resolve", help="JSON fetch instructions")
@@ -864,41 +911,6 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("prune", help="Remove inventory rows below min size")
 
-    p_ensure_remote = sub.add_parser(
-        "ensure-remote",
-        help="Materialize paths on GPU/remote host (no Mac inventory required)",
-    )
-    p_ensure_remote.add_argument("paths", nargs="*", help="Project-relative paths or cvfs refs")
-    p_ensure_remote.add_argument(
-        "--dest-root",
-        type=Path,
-        required=True,
-        help="Remote filesystem root (e.g. /workspace)",
-    )
-    p_ensure_remote.add_argument(
-        "--archive",
-        default="remote_staging",
-        choices=["local_archive", "remote_staging", "runpod_staging"],
-        help="Blob backend to read from (default: remote_staging for GPU)",
-    )
-    p_ensure_remote.add_argument(
-        "--manifest",
-        type=Path,
-        help="Manifest JSON (default: project manifest if present)",
-    )
-    p_ensure_remote.add_argument(
-        "--paths-file",
-        type=Path,
-        help="Newline-separated paths (e.g. run manifest from Mac)",
-    )
-    p_ensure_remote.add_argument("--config-env", type=Path, help="Override .cloud-vfs/config.env")
-    p_ensure_remote.add_argument("--secrets-env", type=Path, help="Override secrets.env")
-    p_ensure_remote.add_argument(
-        "--project-root",
-        type=Path,
-        help="Git checkout root for reading inline cvfs refs",
-    )
-
     p_preflight = sub.add_parser(
         "preflight",
         help="Exit non-zero if paths are still cloud stubs/refs",
@@ -908,25 +920,38 @@ def main(argv: list[str] | None = None) -> int:
 
     p_ingest = sub.add_parser(
         "ingest",
-        help="One-shot upload from arbitrary file (e.g. GPU checkpoint after SCP)",
+        help="Upload local source file to cloud target path (one-shot, no prior register)",
     )
-    p_ingest.add_argument("source", type=Path, help="Local file path (need not be in project tree)")
     p_ingest.add_argument(
-        "--as",
-        dest="dest_rel",
+        "--source",
+        type=Path,
         required=True,
-        help="Project-relative blob key / manifest local path",
+        help="Local file path (need not be under project root)",
     )
     p_ingest.add_argument(
-        "--archive",
+        "--target",
+        required=True,
+        help="Project-relative blob key / manifest path",
+    )
+    p_ingest_source = p_ingest.add_mutually_exclusive_group()
+    p_ingest_source.add_argument(
+        "--source-archive",
         default="local_archive",
+        dest="source_archive",
         choices=["local_archive", "remote_staging", "runpod_staging"],
+        help="Cloud backend to write to",
+    )
+    p_ingest_source.add_argument(
+        "--archive",
+        dest="source_archive",
+        choices=["local_archive", "remote_staging", "runpod_staging"],
+        help=argparse.SUPPRESS,
     )
     p_ingest.add_argument("--dry-run", action="store_true")
     p_ingest.add_argument(
         "--no-stub",
         action="store_true",
-        help="Upload + manifest only; do not write inline ref at --as path",
+        help="Upload + manifest only; do not write inline ref at --target path",
     )
     p_ingest.add_argument(
         "--no-index",
@@ -984,36 +1009,32 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "try":
         return cmd_try(args.path, force=args.force)
     if args.cmd == "ensure":
+        source = (
+            normalize_archive(args.source_archive) if getattr(args, "source_archive", None) else None
+        )
         return cmd_ensure(
             args.paths,
             verify=not args.no_verify,
             check_only=args.check_only,
-            archive_override=normalize_archive(args.archive) if args.archive else None,
-        )
-    if args.cmd == "ensure-remote":
-        from cloud_vfs.gpu_workflow import cmd_ensure_remote
-
-        return cmd_ensure_remote(
-            args.paths,
-            dest_root=args.dest_root,
-            archive=normalize_archive(args.archive) if args.archive else "remote_staging",
-            manifest_file=args.manifest,
-            paths_file=args.paths_file,
-            config_env=args.config_env,
-            secrets_env=args.secrets_env,
-            project_root_override=args.project_root,
+            source_archive=source,
+            target_root=getattr(args, "target_root", None),
+            paths_file=getattr(args, "paths_file", None),
+            manifest_file=getattr(args, "manifest", None),
+            config_env=getattr(args, "config_env", None),
+            secrets_env=getattr(args, "secrets_env", None),
+            ref_root=getattr(args, "ref_root", None),
         )
     if args.cmd == "preflight":
-        from cloud_vfs.gpu_workflow import cmd_preflight
+        from cloud_vfs.materialize import cmd_preflight
 
         return cmd_preflight(args.paths, as_json=args.json)
     if args.cmd == "ingest":
-        from cloud_vfs.gpu_workflow import cmd_ingest
+        from cloud_vfs.materialize import cmd_ingest
 
         return cmd_ingest(
             args.source,
-            args.dest_rel,
-            archive=normalize_archive(args.archive),
+            args.target,
+            source_archive=normalize_archive(args.source_archive),
             dry_run=args.dry_run,
             emit_stub=not args.no_stub,
             index_inventory=not args.no_index,

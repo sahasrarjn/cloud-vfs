@@ -53,20 +53,18 @@ def load_azure_env() -> dict[str, str]:
     return load_cloud_env()
 
 
-ARCHIVE_ROLE_LABELS: dict[str, str] = {
-    "local_archive": "mac_archive",
-    "remote_staging": "gpu_staging",
-}
-
 BLOB_ROLE_ALIASES: dict[str, str] = {
+    "primary": "local_archive",
     "archive": "local_archive",
-    "mac_archive": "local_archive",
     "local": "local_archive",
+    "secondary": "remote_staging",
     "staging": "remote_staging",
-    "gpu_staging": "remote_staging",
-    "gpu": "remote_staging",
     "remote": "remote_staging",
     "runpod_staging": "remote_staging",
+    # legacy aliases (still accepted)
+    "mac_archive": "local_archive",
+    "gpu_staging": "remote_staging",
+    "gpu": "remote_staging",
 }
 
 
@@ -81,9 +79,22 @@ def archive_from_entry(entry: dict[str, Any] | None, default: str = "local_archi
     return normalize_archive(str(raw))
 
 
-def archive_context_hints(rel: str, archive: str) -> dict[str, str]:
-    archive = normalize_archive(archive)
+def source_target_hints(rel: str, source_archive: str) -> dict[str, Any]:
+    """CLI hints: cloud source archive -> filesystem target paths."""
+    source_archive = normalize_archive(source_archive)
+    ensure = f"cloud-vfs ensure {rel}"
+    if source_archive != "local_archive":
+        ensure += f" --source {source_archive}"
     return {
-        "mac": f"cloud-vfs ensure {rel}",
-        "gpu": f"cloud-vfs ensure-remote --dest-root /workspace --archive {archive} {rel}",
+        "source": {
+            "archive": source_archive,
+            "ensure": ensure,
+        },
+        "target": {
+            "project_root": ensure,
+            "custom_root": (
+                f"cloud-vfs ensure --target-root <DIR>"
+                f" --source {source_archive} {rel}"
+            ),
+        },
     }
