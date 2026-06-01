@@ -32,6 +32,7 @@ Large **`data/` artifacts only** (default ≥ 50 MB). Code excluded — see `inv
 | Verify setup | `cloud-vfs doctor` / `doctor --roundtrip` |
 | Before deleting local files | `cloud-vfs guard <path>` (required) |
 | Fetch + verify | `cloud-vfs ensure <path>` |
+| Preview fetch | `cloud-vfs ensure --dry-run <path>` |
 | Preflight stubs | `cloud-vfs preflight <paths>` |
 | Materialize at other root | `cloud-vfs ensure --target-root <DIR> [--source ARCHIVE] <paths>` |
 | Ingest external file | `cloud-vfs ingest --source <file> --target <rel>` |
@@ -44,16 +45,26 @@ Large **`data/` artifacts only** (default ≥ 50 MB). Code excluded — see `inv
 | Rebuild ephemeral index | `cloud-vfs reconcile --from-blob --fix-index --prefix data/generated/` |
 | Preview offload | `cloud-vfs offload --dry-run` |
 | Offload | `cloud-vfs offload <path>...` |
+| Release local (remote ok) | `cloud-vfs local-release <path>...` |
 
 ## Agent rules
 
-1. **Inline refs:** If reading a path returns JSON with `"cvfs": 1`, run `cloud-vfs ensure <path>` before treating it as binary data (numpy, pandas, etc.)
-2. **Directory stubs:** If a directory contains only `.cloudstub`, run `ensure` on the directory path
-3. Before reading other cloud-only paths: `ensure <path>`
-4. After creating outputs ≥ min size: `register <path>`
-5. Before offloading: **always** `offload --dry-run` and get user confirmation
-6. After compute runs: `reconcile`
-7. **Never** hand-edit inventory JSON
+**Offloaded ≠ missing.** The path still exists at its original location — it holds a stub/ref with fetch instructions. Run `cloud-vfs ensure <path>` before reading binary data.
+
+1. **Discover:** `cloud-vfs resolve <path>` — check `is_ref`, `remote_present`, `content_length`, `fetch_cmd`
+2. **Need bytes?** `cloud-vfs ensure <path>` (or `ensure --dry-run` to preview transport)
+3. **Free disk after task?** `cloud-vfs offload <path>` or `local-release <path>` when remote already verified
+4. **Inline refs:** If reading a path returns JSON with `"cvfs": 1`, run `ensure` before treating it as binary (numpy, pandas, etc.)
+5. **Directory stubs:** If a directory contains only `.cloudstub`, run `ensure` on the directory path
+6. Before reading other cloud-only paths: `ensure <path>`
+7. After creating outputs ≥ min size: `register <path>`
+8. Before offloading: **always** `offload --dry-run` and get user confirmation
+9. After compute runs: `reconcile`
+10. **Never** hand-edit inventory JSON
+
+### Large blob transport (Azure)
+
+For blobs ≥ 100 MB, cloud-vfs uses **azcopy** (parallel I/O). Install azcopy v10 and keep `az` CLI for metadata. AWS paths continue to use `aws s3 cp/sync`.
 
 ## Inventory row (per large file)
 

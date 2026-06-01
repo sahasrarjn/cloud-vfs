@@ -51,7 +51,12 @@ from cloud_vfs.storage.manifest import (
     mark_offloaded,
     save_manifest,
 )
-from cloud_vfs.storage.backends import blob_matches_local_size
+from cloud_vfs.storage.backends import (
+    azure_blob_url_redacted,
+    blob_content_length,
+    blob_matches_local_size,
+    choose_azure_transport,
+)
 from cloud_vfs.storage.offload_job import (
     STATUS_FAILED,
     STATUS_SKIPPED,
@@ -250,11 +255,75 @@ def _safe_fetch(
     return nbytes
 
 
+def _resolve_remote_fields(
+    cfg: Any,
+    blob: str | None,
+    prefix: str | None,
+) -> tuple[bool, int | None]:
+    if blob:
+        length = blob_content_length(cfg, blob)
+        return length is not None, length
+    if prefix:
+        from cloud_vfs.storage.backends import list_blob_keys
+
+        keys = list_blob_keys(cfg, prefix.rstrip("/"))
+        return bool(keys), None
+    return False, None
+
+
+def _status_label_offloaded(
+    *,
+    provider: str,
+    archive: str,
+    rel: str,
+    remote_present: bool,
+    content_length: int | None,
+) -> str:
+    if remote_present and content_length is not None:
+        size_part = fmt_bytes(content_length)
+    elif remote_present:
+        size_part = "remote ok"
+    else:
+        size_part = "remote unverified"
+    return f"OFFLOADED ({size_part} on {provider}/{archive}) — {fetch_cmd(rel)}"
+
+
+def _plan_ensure_fetch(
+    rel: str,
+    meta: dict[str, Any],
+    cfg: Any,
+) -> dict[str, Any]:
+    blob = meta.get("blob")
+    prefix = meta.get("blob_prefix")
+    content_length = blob_content_length(cfg, blob) if blob else None
+    transport = choose_azure_transport(content_length) if cfg.provider == "azure" else "aws-cli"
+    plan: dict[str, Any] = {
+        "path": rel,
+        "archive": meta.get("archive", "local_archive"),
+        "provider": cfg.provider,
+        "transport": transport,
+    }
+    if blob:
+        plan["blob"] = blob
+        if content_length is not None:
+            plan["content_length"] = content_length
+            plan["content_length_human"] = fmt_bytes(content_length)
+        if cfg.provider == "azure":
+            plan["blob_url"] = azure_blob_url_redacted(cfg, blob)
+        else:
+            plan["blob_url"] = f"s3://{cfg.bucket}/{blob}"
+    elif prefix:
+        plan["blob_prefix"] = prefix
+        plan["transport"] = "az-cli-batch" if cfg.provider == "azure" else "aws-cli"
+    return plan
+
+
 def cmd_ensure(
     paths: list[str],
     *,
     verify: bool,
     check_only: bool = False,
+    dry_run: bool = False,
     source_archive: str | None = None,
     target_root: Path | None = None,
     paths_file: Path | None = None,
@@ -267,6 +336,10 @@ def cmd_ensure(
         from cloud_vfs.materialize import cmd_preflight
 
         return cmd_preflight(paths, as_json=False)
+
+    if dry_run and target_root is not None:
+        _print_error("--dry-run is not supported with --target-root")
+        return 1
 
     if target_root is not None:
         from cloud_vfs.materialize import cmd_ensure_at_target
@@ -296,10 +369,14 @@ def cmd_ensure(
             _print_error(exc)
             return 1
         expanded.extend(_ensure_targets(rel, manifest))
+    env = load_cloud_env()
     for rel in expanded:
         entry = find_entry(manifest, rel)
         if is_real_local(rel):
-            print(f"local: {rel}")
+            if dry_run:
+                print(f"local (skip): {rel}")
+            else:
+                print(f"local: {rel}")
             continue
         try:
             meta = _resolve_fetch_meta(rel, entry, manifest)
@@ -309,7 +386,6 @@ def cmd_ensure(
         if source_archive:
             meta["archive"] = normalize_archive(source_archive)
         archive = meta.get("archive", "local_archive")
-        env = load_cloud_env()
         prov = meta.get("provider") or (entry or {}).get("provider")
         mcfg = manifest_with_provider(manifest, archive, prov)
         try:
@@ -317,6 +393,15 @@ def cmd_ensure(
         except (KeyError, ValueError) as exc:
             _print_error(f"missing cloud config: {exc}")
             return 1
+        if dry_run:
+            plan = _plan_ensure_fetch(rel, meta, cfg)
+            print(
+                f"would fetch: {rel} ({plan['content_length_human'] if plan.get('content_length_human') else 'size unknown'}) "
+                f"via {plan['transport']} from {cfg.provider}/{archive}"
+            )
+            if plan.get("blob_url"):
+                print(f"  blob: {plan['blob_url']}")
+            continue
         print(f"fetch: {rel} ({cfg.provider}/{archive})")
         progress_label = f"[cloud-vfs ensure] fetching {rel} ({cfg.provider}/{archive})"
         try:
@@ -338,6 +423,27 @@ def cmd_ensure(
     if changed:
         save_manifest(manifest)
     return 0
+
+
+def cmd_local_release(
+    paths: list[str],
+    *,
+    archive_override: str | None,
+    dry_run: bool = False,
+) -> int:
+    """Delete local bytes when remote blob already exists (idempotent offload)."""
+    if not paths:
+        print("Usage: cloud-vfs local-release <paths...>", file=sys.stderr)
+        return 1
+    return cmd_offload(
+        paths,
+        dry_run=dry_run,
+        archive_override=archive_override,
+        delete_local=True,
+        verify_only=False,
+        no_resume=False,
+        release_only=True,
+    )
 
 
 def cmd_resolve(path: str) -> int:
@@ -385,6 +491,9 @@ def cmd_resolve(path: str) -> int:
         }
     if stub:
         out["stub"] = stub
+    remote_present = False
+    content_length: int | None = None
+    cfg = None
     if not local_present:
         out["fetch_cmd"] = fetch_cmd(rel)
         env = load_cloud_env()
@@ -393,24 +502,94 @@ def cmd_resolve(path: str) -> int:
             blob = (stub or {}).get("blob") or (entry or {}).get("blob")
             prefix = (stub or {}).get("blob_prefix") or (entry or {}).get("blob_prefix")
             out["provider"] = cfg.provider
+            remote_present, content_length = _resolve_remote_fields(cfg, blob, prefix)
+            out["remote_present"] = remote_present
+            if content_length is not None:
+                out["content_length"] = content_length
+                out["content_length_human"] = fmt_bytes(content_length)
             if cfg.provider == "aws":
                 if blob:
                     out["s3_url"] = f"s3://{cfg.bucket}/{blob}"
                 elif prefix:
                     out["s3_prefix_url"] = f"s3://{cfg.bucket}/{prefix.rstrip('/')}/"
             else:
-                base = (manifest.get(archive) or {}).get("base_url") or cfg.base_url
+                base = (manifest.get(source_archive) or {}).get("base_url") or cfg.base_url
                 if blob:
                     out["blob_url"] = f"{base}/{blob}".replace("//", "/").replace(":/", "://")
                 elif prefix:
                     out["blob_prefix_url"] = f"{base}/{prefix}".replace("//", "/").replace(":/", "://")
         except (KeyError, ValueError):
-            pass
+            out["remote_present"] = False
+        if ref_present:
+            out["status_label"] = _status_label_offloaded(
+                provider=(cfg.provider if cfg else "unknown"),
+                archive=source_archive,
+                rel=rel,
+                remote_present=remote_present,
+                content_length=content_length,
+            )
     print(json.dumps(out, indent=2))
     return 0
 
 
-def cmd_status(*, as_json: bool, drift: bool) -> int:
+def cmd_status(*, path: str | None, as_json: bool, drift: bool) -> int:
+    if path is not None:
+        try:
+            rel = normalize_rel(path)
+        except PathOutsideProjectError as exc:
+            _print_error(exc)
+            return 1
+        stub = read_stub(rel)
+        local_present = is_real_local(rel)
+        ref_present = is_ref(rel) or (stub is not None and not local_present)
+        if not ref_present and local_present:
+            print(f"local: {rel}")
+            return 0
+        manifest = load_manifest()
+        entry = find_entry(manifest, rel)
+        source_archive = (stub or {}).get("archive") or archive_from_entry(entry)
+        env = load_cloud_env()
+        remote_present = False
+        content_length: int | None = None
+        provider = "unknown"
+        try:
+            cfg = resolve_archive(env, manifest, source_archive)
+            provider = cfg.provider
+            blob = (stub or {}).get("blob") or (entry or {}).get("blob")
+            prefix = (stub or {}).get("blob_prefix") or (entry or {}).get("blob_prefix")
+            remote_present, content_length = _resolve_remote_fields(cfg, blob, prefix)
+        except (KeyError, ValueError, FileNotFoundError):
+            pass
+        if remote_present:
+            state = "offloaded-remote-ok"
+        elif ref_present:
+            state = "offloaded-missing-remote"
+        else:
+            state = "unknown"
+        label = _status_label_offloaded(
+            provider=provider,
+            archive=source_archive,
+            rel=rel,
+            remote_present=remote_present,
+            content_length=content_length,
+        )
+        payload = {
+            "path": rel,
+            "state": state,
+            "local_present": local_present,
+            "is_ref": ref_present,
+            "remote_present": remote_present,
+            "status_label": label,
+        }
+        if content_length is not None:
+            payload["content_length"] = content_length
+            payload["content_length_human"] = fmt_bytes(content_length)
+        if as_json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print(label)
+            print(f"  state: {state}")
+        return 0 if remote_present or not ref_present else 1
     try:
         manifest = load_manifest()
     except (FileNotFoundError, ValueError) as exc:
@@ -519,6 +698,7 @@ def cmd_offload(
     delete_local: bool,
     verify_only: bool = False,
     no_resume: bool = False,
+    release_only: bool = False,
 ) -> int:
     try:
         manifest = load_manifest()
@@ -598,41 +778,98 @@ def cmd_offload(
             continue
 
         if not src.exists() or not is_real_local(rel):
+            stub = read_stub(rel)
+            if stub or is_ref(rel):
+                blob = (stub or {}).get("blob") or (entry.get("blob") if entry else None)
+                blob_prefix = (stub or {}).get("blob_prefix") or (
+                    entry.get("blob_prefix") if entry else None
+                )
+                remote_ok, rlen = _resolve_remote_fields(
+                    cfg,
+                    blob,
+                    blob_prefix,
+                )
+                if remote_ok:
+                    size_note = fmt_bytes(rlen) if rlen is not None else "present"
+                    print(
+                        f"OK: {rel} offloaded-remote-ok ({size_note} on "
+                        f"{cfg.provider}/{use_archive})"
+                    )
+                    if batch_job:
+                        mark_job_skipped_if_pending(batch_job, rel)
+                    continue
+                print(f"WARN: {rel} stub present but remote missing or unverified")
             print(f"SKIP (not local): {rel}")
             if batch_job:
                 mark_job_skipped_if_pending(batch_job, rel)
             continue
         size = tree_size(src)
         if dry_run:
-            print(f"  would offload: {rel}  {fmt_bytes(size)}  -> {cfg.provider}/{use_archive}")
+            if release_only:
+                blob_key = rel if src.is_file() else None
+                verified = blob_key and blob_matches_local_size(cfg, blob_key, src)
+                if verified:
+                    print(f"  would local-release: {rel}  {fmt_bytes(size)}  (remote verified, remove local)")
+                else:
+                    print(f"  would local-release: {rel}  {fmt_bytes(size)}  (remote NOT verified — cannot release)")
+            else:
+                transport = choose_azure_transport(size) if cfg.provider == "azure" else "aws-cli"
+                print(
+                    f"  would offload: {rel}  {fmt_bytes(size)}  -> {cfg.provider}/{use_archive} "
+                    f"via {transport}"
+                )
             continue
 
-        progress = None if no_resume else load_offload_progress(rel)
-        if progress and (
-            progress.get("archive") != use_archive or progress.get("delete_local") != delete_local
-        ):
-            print(f"[cloud-vfs offload] stale progress for {rel}, starting fresh")
-            clear_offload_progress(rel)
-            progress = None
-
         precomputed = hash_paths_before_offload(rel)
-        if progress:
-            indexed = len(progress.get("indexed_files") or [])
-            uploaded = progress.get("uploaded", False)
+        if release_only:
+            blob_key = rel if src.is_file() else None
+            if not blob_key or not blob_matches_local_size(cfg, blob_key, src):
+                _print_error(
+                    f"{rel}: remote blob missing or size mismatch — "
+                    "run offload first or verify with offload --verify-only"
+                )
+                if batch_job:
+                    set_job_path_status(batch_job, rel, STATUS_FAILED, error="remote not verified")
+                path_failures += 1
+                continue
             print(
-                f"[cloud-vfs offload] resuming {rel} "
-                f"(uploaded={'yes' if uploaded else 'no'}, indexed={indexed})"
+                f"[cloud-vfs local-release] remote verified for {rel} "
+                f"({fmt_bytes(size)}), removing local bytes …"
             )
-            if not progress.get("precomputed"):
-                progress["precomputed"] = precomputed
-        else:
             progress = new_offload_progress(
                 rel,
                 archive=use_archive,
-                delete_local=delete_local,
+                delete_local=True,
                 precomputed=precomputed,
             )
+            progress["uploaded"] = True
             save_offload_progress(progress)
+        else:
+            progress = None if no_resume else load_offload_progress(rel)
+            if progress and (
+                progress.get("archive") != use_archive or progress.get("delete_local") != delete_local
+            ):
+                print(f"[cloud-vfs offload] stale progress for {rel}, starting fresh")
+                clear_offload_progress(rel)
+                progress = None
+
+            if progress:
+                indexed = len(progress.get("indexed_files") or [])
+                uploaded = progress.get("uploaded", False)
+                print(
+                    f"[cloud-vfs offload] resuming {rel} "
+                    f"(uploaded={'yes' if uploaded else 'no'}, indexed={indexed})"
+                )
+                if not progress.get("precomputed"):
+                    progress["precomputed"] = precomputed
+            else:
+                progress = new_offload_progress(
+                    rel,
+                    archive=use_archive,
+                    delete_local=delete_local,
+                    precomputed=precomputed,
+                )
+                save_offload_progress(progress)
 
         blob_prefix = (entry.get("blob_prefix") if entry else None) or f"{rel.rstrip('/')}/"
         action = "remove local after upload" if delete_local else "keep local after upload"
@@ -925,6 +1162,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Exit non-zero if any path is still a stub/ref (preflight, no download)",
     )
     p_ensure.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would be downloaded (size, archive, transport) without fetching",
+    )
+    p_ensure.add_argument(
         "--no-verify",
         action="store_true",
         help="Skip sha256 check against inventory after download (project target only)",
@@ -969,6 +1211,7 @@ def main(argv: list[str] | None = None) -> int:
     p_resolve.add_argument("path")
 
     p_status = sub.add_parser("status", help="Local vs stub + sizes")
+    p_status.add_argument("path", nargs="?", help="Single path: offloaded-remote-ok vs missing-remote")
     p_status.add_argument("--json", action="store_true")
     p_status.add_argument("--drift", action="store_true", help="Include inventory drift summary")
 
@@ -1101,6 +1344,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_offload.set_defaults(delete_local=True)
 
+    p_release = sub.add_parser(
+        "local-release",
+        help="Remove local bytes when remote blob already verified (single files only)",
+    )
+    p_release.add_argument("paths", nargs="+")
+    p_release.add_argument("--dry-run", action="store_true")
+    p_release_source = p_release.add_mutually_exclusive_group()
+    p_release_source.add_argument(
+        "--source",
+        dest="source_archive",
+        type=archive_cli_arg,
+        help="Cloud backend to verify against",
+    )
+    p_release_source.add_argument(
+        "--archive",
+        dest="source_archive",
+        type=archive_cli_arg,
+        help=argparse.SUPPRESS,
+    )
+
     sub.add_parser("materialize-stubs", help="Write .cloudstub for offloaded manifest entries")
 
     p_doctor = sub.add_parser("doctor", help="Check install, project config, CLI, and cloud access")
@@ -1125,6 +1388,7 @@ def main(argv: list[str] | None = None) -> int:
             args.paths,
             verify=not args.no_verify,
             check_only=args.check_only,
+            dry_run=getattr(args, "dry_run", False),
             source_archive=source,
             target_root=getattr(args, "target_root", None),
             paths_file=getattr(args, "paths_file", None),
@@ -1151,7 +1415,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "resolve":
         return cmd_resolve(args.path)
     if args.cmd == "status":
-        return cmd_status(as_json=args.json, drift=args.drift)
+        return cmd_status(path=getattr(args, "path", None), as_json=args.json, drift=args.drift)
     if args.cmd == "scan":
         return cmd_scan(as_json=args.json, add=args.add, prefix=args.prefix)
     if args.cmd == "register":
@@ -1179,6 +1443,14 @@ def main(argv: list[str] | None = None) -> int:
             delete_local=args.delete_local,
             verify_only=args.verify_only,
             no_resume=args.no_resume,
+        )
+    if args.cmd == "local-release":
+        return cmd_local_release(
+            args.paths,
+            archive_override=(
+                normalize_archive(args.source_archive) if getattr(args, "source_archive", None) else None
+            ),
+            dry_run=args.dry_run,
         )
     if args.cmd == "materialize-stubs":
         return cmd_materialize_stubs()

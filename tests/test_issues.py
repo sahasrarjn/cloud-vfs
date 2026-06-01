@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -527,6 +529,183 @@ class IssueFixTests(unittest.TestCase):
         output = "".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
         self.assertIn("10%", output)
         self.assertIn("100%", output)
+
+
+class Issue17And19Tests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmpdir.name)
+        cfg = self.root / ".cloud-vfs"
+        cfg.mkdir()
+        (cfg / "index").mkdir()
+        (cfg / "config.env").write_text(
+            "LOCAL_PROVIDER=azure\n"
+            "AZ_LOCAL_STORAGE_ACCOUNT=testacct\n"
+            "AZ_LOCAL_STORAGE_KEY=testkey\n"
+            "AZ_LOCAL_CONTAINER=test-container\n"
+        )
+        (cfg / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "version": 3,
+                    "local_archive": {"provider": "azure", "container": "test-container"},
+                    "entries": [
+                        {
+                            "id": "m1",
+                            "local": "data/model.bin",
+                            "archive": "local_archive",
+                            "blob": "data/model.bin",
+                            "status": "offloaded-local-removed",
+                        }
+                    ],
+                }
+            )
+            + "\n"
+        )
+        (cfg / "inventory-policy.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "index_dir": ".cloud-vfs/index",
+                    "min_size_bytes": 1,
+                    "include_prefixes": ["data/"],
+                    "exclude_prefixes": [],
+                }
+            )
+            + "\n"
+        )
+        self._prev = os.environ.get("CLOUD_VFS_PROJECT_ROOT")
+        os.environ["CLOUD_VFS_PROJECT_ROOT"] = str(self.root)
+        project_root.cache_clear()
+
+    def tearDown(self) -> None:
+        if self._prev is None:
+            os.environ.pop("CLOUD_VFS_PROJECT_ROOT", None)
+        else:
+            os.environ["CLOUD_VFS_PROJECT_ROOT"] = self._prev
+        project_root.cache_clear()
+        self._tmpdir.cleanup()
+
+    def test_resolve_includes_remote_present_and_content_length(self) -> None:
+        """Issue #17 — resolve returns remote metadata for stub paths."""
+        from cloud_vfs.cli import cmd_resolve
+
+        rel = "data/model.bin"
+        write_inline_ref(rel, {"blob": rel, "archive": "local_archive"})
+        with patch("cloud_vfs.cli.blob_content_length", return_value=2_790_741_151):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = cmd_resolve(rel)
+        self.assertEqual(rc, 0)
+        payload = json.loads(buf.getvalue())
+        self.assertTrue(payload["remote_present"])
+        self.assertEqual(payload["content_length"], 2_790_741_151)
+        self.assertIn("status_label", payload)
+        self.assertIn("OFFLOADED", payload["status_label"])
+
+    def test_ensure_dry_run_prints_transport(self) -> None:
+        """Issue #17 — ensure --dry-run previews fetch without downloading."""
+        from cloud_vfs.cli import cmd_ensure
+
+        rel = "data/model.bin"
+        write_inline_ref(rel, {"blob": rel, "archive": "local_archive"})
+        buf = io.StringIO()
+        with patch("cloud_vfs.cli.blob_content_length", return_value=200 * 1024 * 1024):
+            with patch("cloud_vfs.cli.choose_azure_transport", return_value="azcopy"):
+                with redirect_stdout(buf):
+                    rc = cmd_ensure([rel], verify=False, dry_run=True)
+        self.assertEqual(rc, 0)
+        out = buf.getvalue()
+        self.assertIn("would fetch", out)
+        self.assertIn("azcopy", out)
+        self.assertTrue(is_ref(rel))
+
+    def test_offload_stub_path_reports_remote_ok(self) -> None:
+        """Issue #17 — already-stubbed paths report offloaded-remote-ok, not SKIP."""
+        rel = "data/model.bin"
+        write_inline_ref(rel, {"blob": rel, "archive": "local_archive"})
+        buf = io.StringIO()
+        with patch("cloud_vfs.cli.blob_content_length", return_value=1024):
+            with patch("cloud_vfs.storage.backends.list_blob_keys", return_value=[]):
+                with redirect_stdout(buf):
+                    rc = cmd_offload([rel], dry_run=False, archive_override=None, delete_local=True)
+        self.assertEqual(rc, 0)
+        self.assertIn("offloaded-remote-ok", buf.getvalue())
+        self.assertNotIn("SKIP (not local)", buf.getvalue())
+
+    def test_azure_fetch_uses_azcopy_for_large_blobs(self) -> None:
+        """Issue #19 — large Azure downloads use azcopy with SAS."""
+        from cloud_vfs.storage.backends import AZCOPY_MIN_BYTES, fetch_path
+        from cloud_vfs.storage.config import ArchiveConfig
+
+        rel = "data/large.bin"
+        dest = self.root / rel
+        dest.parent.mkdir(parents=True)
+        cfg = ArchiveConfig(
+            name="local_archive",
+            provider="azure",
+            bucket="test-container",
+            account="acct",
+            key="key",
+        )
+        captured: list[list[str]] = []
+
+        def fake_run(cmd, *, action, **kwargs):
+            captured.append(list(cmd))
+            if cmd and cmd[0] == "azcopy" and any(a.startswith("--from-to=BlobLocal") for a in cmd):
+                Path(cmd[3]).write_bytes(b"x")
+            return subprocess.CompletedProcess(cmd, 0, stdout="sastoken")
+
+        with patch("cloud_vfs.storage.backends._run", side_effect=fake_run):
+            with patch("cloud_vfs.storage.backends._azcopy_on_path", return_value=True):
+                with patch(
+                    "cloud_vfs.storage.backends.blob_content_length",
+                    return_value=AZCOPY_MIN_BYTES,
+                ):
+                    fetch_path({"blob": rel}, rel, cfg, dest=dest)
+
+        azcopy_cmd = next(cmd for cmd in captured if cmd and cmd[0] == "azcopy")
+        self.assertIn("--from-to=BlobLocal", azcopy_cmd)
+
+    def test_azure_upload_uses_azcopy_for_large_files(self) -> None:
+        """Issue #19 — large Azure uploads use azcopy with SAS."""
+        from cloud_vfs.storage.backends import AZCOPY_MIN_BYTES, upload_path
+        from cloud_vfs.storage.config import ArchiveConfig
+
+        rel = "data/large.bin"
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * AZCOPY_MIN_BYTES)
+        cfg = ArchiveConfig(
+            name="local_archive",
+            provider="azure",
+            bucket="test-container",
+            account="acct",
+            key="key",
+        )
+        captured: list[list[str]] = []
+
+        def fake_run(cmd, *, action, **kwargs):
+            captured.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout="sastoken")
+
+        with patch("cloud_vfs.storage.backends._run", side_effect=fake_run):
+            with patch("cloud_vfs.storage.backends._azcopy_on_path", return_value=True):
+                upload_path(rel, cfg, source_path=path)
+
+        azcopy_cmd = next(cmd for cmd in captured if cmd and cmd[0] == "azcopy")
+        self.assertIn("--from-to=LocalBlob", azcopy_cmd)
+
+    def test_choose_azure_transport_falls_back_without_azcopy(self) -> None:
+        """Issue #19 — missing azcopy falls back to az-cli with warning."""
+        from cloud_vfs.storage.backends import AZCOPY_MIN_BYTES, choose_azure_transport
+
+        with patch("cloud_vfs.storage.backends._azcopy_on_path", return_value=False):
+            with patch("builtins.print") as mock_print:
+                transport = choose_azure_transport(AZCOPY_MIN_BYTES)
+        self.assertEqual(transport, "az-cli")
+        warning = " ".join(str(c) for c in mock_print.call_args_list)
+        self.assertIn("azcopy not found", warning)
 
 
 if __name__ == "__main__":

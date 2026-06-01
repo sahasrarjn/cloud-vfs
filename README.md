@@ -44,7 +44,7 @@ pip install git+https://github.com/sahasrarjn/cloud-vfs.git
 curl -fsSL https://raw.githubusercontent.com/sahasrarjn/cloud-vfs/main/install.sh | bash
 ```
 
-Requires **Python 3.9+**, `az` and/or `aws` CLI, and cloud credentials.
+Requires **Python 3.9+**, `az` and/or `aws` CLI, cloud credentials, and **[azcopy v10](https://learn.microsoft.com/azure/storage/common/storage-use-azcopy-v10)** (recommended for multi-GB blob transfers).
 
 ## Try it in 5 minutes
 
