@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -252,6 +253,84 @@ class IssueFixTests(unittest.TestCase):
             with self.assertRaises(CloudStorageError) as ctx:
                 _run_monitored(cmd, action="test idle", heartbeat_sec=0.5, idle_timeout_sec=1.0)
         self.assertIn("no subprocess output", str(ctx.exception))
+
+    def test_upload_streams_progress_on_tty_for_large_files(self) -> None:
+        """Issue #13 — large uploads stream native CLI progress when stdout is a TTY."""
+        from cloud_vfs.storage.backends import PROGRESS_MIN_BYTES, upload_path
+        from cloud_vfs.storage.config import ArchiveConfig
+
+        rel = "data/large.bin"
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * (PROGRESS_MIN_BYTES + 1))
+
+        cfg = ArchiveConfig(
+            name="local_archive",
+            provider="azure",
+            bucket="test-container",
+            account="acct",
+            key="key",
+            profile=None,
+            region=None,
+        )
+        captured_cmds: list[list[str]] = []
+
+        def fake_run(cmd, *, action, **kwargs):
+            captured_cmds.append(list(cmd))
+            if "upload" in action:
+                self.assertTrue(kwargs.get("stream_output"))
+            return subprocess.CompletedProcess(cmd, 0, stdout="Finished")
+
+        with patch("cloud_vfs.storage.backends._run", side_effect=fake_run):
+            with patch("cloud_vfs.storage.backends.sys.stdout.isatty", return_value=True):
+                upload_path(rel, cfg)
+
+        upload_cmd = next(cmd for cmd in captured_cmds if "upload" in " ".join(cmd))
+        self.assertNotIn("--no-progress", upload_cmd)
+
+    def test_upload_suppresses_progress_for_small_files(self) -> None:
+        """Issue #13 — small single-file uploads keep --no-progress even on a TTY."""
+        from cloud_vfs.storage.backends import upload_path
+        from cloud_vfs.storage.config import ArchiveConfig
+
+        rel = "data/small.bin"
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"small")
+
+        cfg = ArchiveConfig(
+            name="local_archive",
+            provider="azure",
+            bucket="test-container",
+            account="acct",
+            key="key",
+            profile=None,
+            region=None,
+        )
+        captured_cmds: list[list[str]] = []
+
+        def fake_run(cmd, *, action, **kwargs):
+            captured_cmds.append(list(cmd))
+            self.assertFalse(kwargs.get("stream_output"))
+            return subprocess.CompletedProcess(cmd, 0, stdout="")
+
+        with patch("cloud_vfs.storage.backends._run", side_effect=fake_run):
+            with patch("cloud_vfs.storage.backends.sys.stdout.isatty", return_value=True):
+                upload_path(rel, cfg)
+
+        upload_cmd = next(cmd for cmd in captured_cmds if "upload" in " ".join(cmd))
+        self.assertIn("--no-progress", upload_cmd)
+
+    def test_run_monitored_streams_subprocess_output(self) -> None:
+        """Issue #13 — stream_output prints subprocess lines as they arrive."""
+        from cloud_vfs.storage.backends import _run_monitored
+
+        cmd = [sys.executable, "-c", "print('line-one'); print('line-two')"]
+        with patch("builtins.print") as mock_print:
+            _run_monitored(cmd, action="test stream", stream_output=True)
+        printed = [str(call.args[0]).strip() for call in mock_print.call_args_list if call.args]
+        self.assertIn("line-one", printed)
+        self.assertIn("line-two", printed)
 
 
 if __name__ == "__main__":
