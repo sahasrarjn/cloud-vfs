@@ -16,6 +16,13 @@ from .errors import CloudStorageError
 from .paths import STUB_NAME, abs_path, normalize_rel
 
 PROGRESS_MIN_BYTES = 100 * 1024 * 1024  # show native CLI progress for large single-file uploads
+_STREAM_READ_SIZE = 4096
+
+
+def _is_ci() -> bool:
+    if os.environ.get("CI", "").lower() in ("1", "true", "yes"):
+        return True
+    return bool(os.environ.get("GITHUB_ACTIONS") or os.environ.get("GITLAB_CI"))
 
 
 def _default_idle_timeout_sec() -> float:
@@ -27,7 +34,7 @@ def _default_idle_timeout_sec() -> float:
 
 
 def _should_show_upload_progress(src: Path) -> bool:
-    if not sys.stdout.isatty():
+    if not sys.stdout.isatty() or _is_ci():
         return False
     if src.is_dir():
         return True
@@ -61,12 +68,20 @@ def _run_monitored(
     def _reader() -> None:
         nonlocal last_output
         assert proc.stdout is not None
-        for line in proc.stdout:
-            with output_lock:
-                output_lines.append(line)
-                last_output = time.monotonic()
-            if stream_output:
-                print(line, end="", flush=True)
+        if stream_output:
+            while True:
+                chunk = proc.stdout.read(_STREAM_READ_SIZE)
+                if not chunk:
+                    break
+                with output_lock:
+                    output_lines.append(chunk)
+                    last_output = time.monotonic()
+                print(chunk, end="", flush=True)
+        else:
+            for line in proc.stdout:
+                with output_lock:
+                    output_lines.append(line)
+                    last_output = time.monotonic()
 
     def _heartbeat() -> None:
         start = time.monotonic()
@@ -289,8 +304,13 @@ def upload_path(
         else:
             key = key_base if blob_prefix else rel
             uri = f"s3://{cfg.bucket}/{key}"
+            cp_cmd = _aws_base(cfg) + ["s3", "cp", str(src), uri]
+            if show_progress:
+                cp_cmd.append("--progress-multiline")
+            else:
+                cp_cmd.append("--no-progress")
             _run(
-                _aws_base(cfg) + ["s3", "cp", str(src), uri],
+                cp_cmd,
                 action=f"upload s3://{cfg.bucket}/{key}",
                 label=progress_label,
                 stream_output=show_progress,
