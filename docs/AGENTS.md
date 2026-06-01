@@ -8,6 +8,8 @@ cloud-vfs is **generic**: **source** (cloud archive) and **target** (filesystem 
 
 ## Before reading cloud-only paths
 
+**Offloaded ≠ missing.** The path still exists — it holds a stub/ref. Never report "checkpoint not available" without checking `resolve` first.
+
 If file content is JSON with `"cvfs": 1`, the path is an **inline ref** — fetch before use:
 
 ```bash
@@ -19,11 +21,12 @@ For directories with `.cloudstub` only, run `ensure` on the directory path.
 Check first:
 
 ```bash
-cloud-vfs resolve <path>
+cloud-vfs resolve <path>          # is_ref, remote_present, content_length, fetch_cmd
+cloud-vfs ensure --dry-run <path> # preview size + transport (azcopy vs cli)
 cloud-vfs preflight <paths...>    # or: cloud-vfs ensure --check-only <paths...>
 ```
 
-(`resolve` returns `is_ref`, `placement`, `source`, `target`, and `hints`.)
+(`resolve` returns `is_ref`, `placement`, `remote_present`, `content_length`, `status_label`, `source`, `target`, and `hints`.)
 
 ## After creating large outputs
 
@@ -75,6 +78,12 @@ cloud-vfs guard <path>
 | Materialize at project | `cloud-vfs ensure <path> [--source ARCHIVE]` |
 | Materialize elsewhere | `cloud-vfs ensure --target-root <DIR> [--source ARCHIVE] <paths>` |
 | Upload external file | `cloud-vfs ingest --source <file> --target <project-rel>` |
+| Release local bytes | `cloud-vfs local-release <path>` (remote already verified) |
+| Per-path remote status | `cloud-vfs status <path>` |
+
+## Large blob transport
+
+Azure blobs ≥ 100 MB use **azcopy v10** (SAS-in-URL). Install azcopy alongside `az` CLI. Small blobs and metadata ops stay on `az storage blob`.
 
 ## Never
 

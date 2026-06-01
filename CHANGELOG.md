@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.7
+
+### Path-stable offload contract ([#17](https://github.com/sahasrarjn/cloud-vfs/issues/17))
+
+- **`resolve`** — adds `remote_present`, `content_length`, and human-readable `status_label` for stub paths
+- **`ensure --dry-run`** — previews fetch size, archive, transport tool, and blob URL (no download)
+- **`status <path>`** — per-path `offloaded-remote-ok` vs `offloaded-missing-remote`
+- **`local-release`** — delete local bytes when remote blob already verified (idempotent re-stub)
+- **Offload idempotency** — already-stubbed paths report `offloaded-remote-ok` instead of `SKIP (not local)`
+- Agent docs: **Offloaded ≠ missing. Path exists; run ensure before read.**
+
+### azcopy transport for large Azure blobs ([#19](https://github.com/sahasrarjn/cloud-vfs/issues/19))
+
+- **Multi-GB ensure/offload** uses **azcopy v10** with blob-scoped SAS (≥ 100 MB threshold)
+- **`az storage blob` CLI** retained for small objects and metadata (`show`, `list`, `generate-sas`)
+- **Fetch progress** — azcopy log streamed on TTY for large downloads
+- **Partial cleanup** — failed azcopy downloads remove `.part` temp files
+- **Fallback** — loud warning when azcopy missing; falls back to CLI
+- README recommends azcopy for large blob transfers
+
 ## 0.5.6
 
 ### Large-file offload robustness ([#15](https://github.com/sahasrarjn/cloud-vfs/issues/15))
