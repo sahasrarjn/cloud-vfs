@@ -313,7 +313,8 @@ class IssueFixTests(unittest.TestCase):
 
         with patch("cloud_vfs.storage.backends._run", side_effect=fake_run):
             with patch("cloud_vfs.storage.backends.sys.stdout.isatty", return_value=True):
-                upload_path(rel, cfg, source_path=dir_path)
+                with patch("cloud_vfs.storage.backends._is_ci", return_value=False):
+                    upload_path(rel, cfg, source_path=dir_path)
 
         upload_cmd, kwargs = next(item for item in captured if "upload-batch" in " ".join(item[0]))
         self.assertTrue(kwargs.get("stream_output"))
@@ -393,7 +394,8 @@ class IssueFixTests(unittest.TestCase):
 
         with patch("cloud_vfs.storage.backends._run", side_effect=fake_run):
             with patch("cloud_vfs.storage.backends.sys.stdout.isatty", return_value=True):
-                upload_path(rel, cfg, source_path=path)
+                with patch("cloud_vfs.storage.backends._is_ci", return_value=False):
+                    upload_path(rel, cfg, source_path=path)
 
         upload_cmd = next(cmd for cmd in captured_cmds if "upload" in " ".join(cmd))
         self.assertIn("--no-progress", upload_cmd)
