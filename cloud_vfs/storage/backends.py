@@ -350,33 +350,42 @@ def _azure_download_blob(
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     if transport == "azcopy":
-        sas = _generate_blob_sas(cfg, blob, write=False)
-        src_url = f"{_azure_blob_url(cfg, blob)}?{sas}"
-        partial = dest.with_name(dest.name + ".part")
-        partial.unlink(missing_ok=True)
-        cmd = [
-            "azcopy",
-            "copy",
-            src_url,
-            str(partial),
-            "--from-to=BlobLocal",
-            "--overwrite=true",
-            "--check-length=true",
-            "--output-type=text",
-        ]
         try:
-            _run(
-                cmd,
-                action=f"azcopy download azure blob {blob}",
-                label=progress_label,
-                heartbeat_prefix="[cloud-vfs ensure]",
-                stream_output=_should_stream_transfer(expected),
+            sas = _generate_blob_sas(cfg, blob, write=False)
+        except CloudStorageError:
+            print(
+                "[cloud-vfs] WARNING: SAS generation failed — falling back to "
+                "'az storage blob download'",
+                flush=True,
             )
-            partial.replace(dest)
-        except Exception:
+            transport = "az-cli"
+        else:
+            src_url = f"{_azure_blob_url(cfg, blob)}?{sas}"
+            partial = dest.with_name(dest.name + ".part")
             partial.unlink(missing_ok=True)
-            raise
-        return
+            cmd = [
+                "azcopy",
+                "copy",
+                src_url,
+                str(partial),
+                "--from-to=BlobLocal",
+                "--overwrite=true",
+                "--check-length=true",
+                "--output-type=text",
+            ]
+            try:
+                _run(
+                    cmd,
+                    action=f"azcopy download azure blob {blob}",
+                    label=progress_label,
+                    heartbeat_prefix="[cloud-vfs ensure]",
+                    stream_output=_should_stream_transfer(expected),
+                )
+                partial.replace(dest)
+            except Exception:
+                partial.unlink(missing_ok=True)
+                raise
+            return
 
     _run(
         [
@@ -417,27 +426,36 @@ def _azure_upload_blob(
     show_progress = _should_show_upload_progress(src)
 
     if transport == "azcopy":
-        sas = _generate_blob_sas(cfg, blob_name, write=True)
-        dst_url = f"{_azure_blob_url(cfg, blob_name)}?{sas}"
-        cmd = [
-            "azcopy",
-            "copy",
-            str(src),
-            dst_url,
-            "--from-to=LocalBlob",
-            "--overwrite=true",
-            "--check-length=true",
-            "--output-type=text",
-        ]
-        _run(
-            cmd,
-            action=f"azcopy upload azure blob {blob_name}",
-            label=progress_label,
-            heartbeat_prefix="[cloud-vfs offload]",
-            stream_output=show_progress or _should_stream_transfer(size),
-            retries=_upload_retry_attempts(),
-        )
-        return
+        try:
+            sas = _generate_blob_sas(cfg, blob_name, write=True)
+        except CloudStorageError:
+            print(
+                "[cloud-vfs] WARNING: SAS generation failed — falling back to "
+                "'az storage blob upload'",
+                flush=True,
+            )
+            transport = "az-cli"
+        else:
+            dst_url = f"{_azure_blob_url(cfg, blob_name)}?{sas}"
+            cmd = [
+                "azcopy",
+                "copy",
+                str(src),
+                dst_url,
+                "--from-to=LocalBlob",
+                "--overwrite=true",
+                "--check-length=true",
+                "--output-type=text",
+            ]
+            _run(
+                cmd,
+                action=f"azcopy upload azure blob {blob_name}",
+                label=progress_label,
+                heartbeat_prefix="[cloud-vfs offload]",
+                stream_output=show_progress or _should_stream_transfer(size),
+                retries=_upload_retry_attempts(),
+            )
+            return
 
     upload_cmd = [
         "az",

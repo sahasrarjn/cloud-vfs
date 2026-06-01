@@ -314,6 +314,7 @@ def _plan_ensure_fetch(
             plan["blob_url"] = f"s3://{cfg.bucket}/{blob}"
     elif prefix:
         plan["blob_prefix"] = prefix
+        plan["transport"] = "az-cli-batch" if cfg.provider == "azure" else "aws-cli"
     return plan
 
 
@@ -804,11 +805,19 @@ def cmd_offload(
             continue
         size = tree_size(src)
         if dry_run:
-            transport = choose_azure_transport(size) if cfg.provider == "azure" else "aws-cli"
-            print(
-                f"  would offload: {rel}  {fmt_bytes(size)}  -> {cfg.provider}/{use_archive} "
-                f"via {transport}"
-            )
+            if release_only:
+                blob_key = rel if src.is_file() else None
+                verified = blob_key and blob_matches_local_size(cfg, blob_key, src)
+                if verified:
+                    print(f"  would local-release: {rel}  {fmt_bytes(size)}  (remote verified, remove local)")
+                else:
+                    print(f"  would local-release: {rel}  {fmt_bytes(size)}  (remote NOT verified — cannot release)")
+            else:
+                transport = choose_azure_transport(size) if cfg.provider == "azure" else "aws-cli"
+                print(
+                    f"  would offload: {rel}  {fmt_bytes(size)}  -> {cfg.provider}/{use_archive} "
+                    f"via {transport}"
+                )
             continue
 
         precomputed = hash_paths_before_offload(rel)
@@ -1337,7 +1346,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_release = sub.add_parser(
         "local-release",
-        help="Remove local bytes when remote blob already verified (idempotent offload)",
+        help="Remove local bytes when remote blob already verified (single files only)",
     )
     p_release.add_argument("paths", nargs="+")
     p_release.add_argument("--dry-run", action="store_true")

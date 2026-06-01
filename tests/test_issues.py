@@ -624,10 +624,14 @@ class Issue17And19Tests(unittest.TestCase):
         """Issue #17 — already-stubbed paths report offloaded-remote-ok, not SKIP."""
         rel = "data/model.bin"
         write_inline_ref(rel, {"blob": rel, "archive": "local_archive"})
+        buf = io.StringIO()
         with patch("cloud_vfs.cli.blob_content_length", return_value=1024):
             with patch("cloud_vfs.storage.backends.list_blob_keys", return_value=[]):
-                rc = cmd_offload([rel], dry_run=False, archive_override=None, delete_local=True)
+                with redirect_stdout(buf):
+                    rc = cmd_offload([rel], dry_run=False, archive_override=None, delete_local=True)
         self.assertEqual(rc, 0)
+        self.assertIn("offloaded-remote-ok", buf.getvalue())
+        self.assertNotIn("SKIP (not local)", buf.getvalue())
 
     def test_azure_fetch_uses_azcopy_for_large_blobs(self) -> None:
         """Issue #19 — large Azure downloads use azcopy with SAS."""
