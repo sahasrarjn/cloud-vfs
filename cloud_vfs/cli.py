@@ -50,10 +50,12 @@ from cloud_vfs.storage.offload_job import (
     STATUS_FAILED,
     STATUS_SKIPPED,
     STATUS_STUBBED,
+    clear_job_offload_progress,
     format_job_summary,
     job_has_failures,
     job_has_pending,
     load_offload_job,
+    mark_job_skipped_if_pending,
     new_offload_job,
     save_offload_job,
     set_job_path_status,
@@ -487,6 +489,22 @@ def _write_dir_stub_after_upload(rel: str, meta: dict[str, Any]) -> None:
     pending.replace(target / ".cloudstub")
 
 
+def _offload_batch_exit(
+    batch_job: dict[str, Any] | None,
+    path_failures: int,
+    *,
+    changed: bool,
+    manifest: dict[str, Any],
+) -> int:
+    if changed:
+        save_manifest(manifest)
+    if batch_job:
+        print(f"[cloud-vfs offload] {format_job_summary(batch_job)}")
+        if path_failures or job_has_failures(batch_job) or job_has_pending(batch_job):
+            return 1
+    return 1 if path_failures else 0
+
+
 def cmd_offload(
     paths: list[str],
     *,
@@ -522,6 +540,7 @@ def cmd_offload(
             batch_job.get("archive") != use_archive
             or batch_job.get("delete_local") != delete_local
         ):
+            clear_job_offload_progress(paths)
             batch_job = new_offload_job(
                 paths, archive=use_archive, delete_local=delete_local
             )
@@ -539,7 +558,11 @@ def cmd_offload(
             rel = normalize_rel(raw)
         except PathOutsideProjectError as exc:
             _print_error(exc)
-            return 1
+            if batch_job:
+                set_job_path_status(batch_job, raw, STATUS_FAILED, error=str(exc))
+                path_failures += 1
+                continue
+            return _offload_batch_exit(batch_job, path_failures, changed=changed, manifest=manifest)
         src = abs_path(rel)
         entry = find_entry(manifest, rel)
         use_archive = normalize_archive(
@@ -552,7 +575,11 @@ def cmd_offload(
             cfg = resolve_archive(env, mcfg, use_archive)
         except (KeyError, ValueError) as exc:
             _print_error(exc)
-            return 1
+            if batch_job:
+                set_job_path_status(batch_job, rel, STATUS_FAILED, error=str(exc))
+                path_failures += 1
+                continue
+            return _offload_batch_exit(batch_job, path_failures, changed=changed, manifest=manifest)
 
         if verify_only:
             if not src.exists():
@@ -567,7 +594,7 @@ def cmd_offload(
         if not src.exists() or not is_real_local(rel):
             print(f"SKIP (not local): {rel}")
             if batch_job:
-                set_job_path_status(batch_job, rel, STATUS_SKIPPED)
+                mark_job_skipped_if_pending(batch_job, rel)
             continue
         size = tree_size(src)
         if dry_run:
@@ -607,25 +634,30 @@ def cmd_offload(
             f"[cloud-vfs offload] uploading {rel} -> {use_archive} ({fmt_bytes(size)})"
         )
 
-        with _offload_interrupt_guard(manifest, progress) as interrupt:
-            manifest_dirty = False
-            if not progress.get("uploaded"):
-                blob_key = rel if src.is_file() else None
-                if (
-                    not no_resume
-                    and src.is_file()
-                    and blob_key
-                    and blob_matches_local_size(cfg, blob_key, src)
-                ):
-                    print(
-                        f"[cloud-vfs offload] blob already complete "
-                        f"({fmt_bytes(size)}), skipping upload for {rel}"
-                    )
-                    progress["uploaded"] = True
-                    save_offload_progress(progress)
-                else:
-                    print(f"offload: {rel} -> {cfg.provider}/{use_archive} ({fmt_bytes(size)}, {action})")
-                    try:
+        interrupt: OffloadInterruptState | None = None
+        try:
+            with _offload_interrupt_guard(manifest, progress) as guard:
+                interrupt = guard
+                manifest_dirty = False
+                if not progress.get("uploaded"):
+                    blob_key = rel if src.is_file() else None
+                    if (
+                        not no_resume
+                        and src.is_file()
+                        and blob_key
+                        and blob_matches_local_size(cfg, blob_key, src)
+                    ):
+                        print(
+                            f"[cloud-vfs offload] blob size matches local "
+                            f"({fmt_bytes(size)}), skipping upload for {rel}"
+                        )
+                        progress["uploaded"] = True
+                        save_offload_progress(progress)
+                    else:
+                        print(
+                            f"offload: {rel} -> {cfg.provider}/{use_archive} "
+                            f"({fmt_bytes(size)}, {action})"
+                        )
                         upload_path(
                             rel,
                             use_archive,
@@ -634,115 +666,110 @@ def cmd_offload(
                             blob_prefix=blob_prefix,
                             progress_label=progress_label,
                         )
-                    except (CloudStorageError, ValueError, FileNotFoundError) as exc:
-                        _print_error(exc)
-                        interrupt.flush()
-                        if batch_job:
-                            set_job_path_status(batch_job, rel, STATUS_FAILED, error=str(exc))
-                        path_failures += 1
-                        continue
-                    progress["uploaded"] = True
-                    save_offload_progress(progress)
-                    if src.is_file():
-                        file_rel = normalize_rel(rel)
-                        digest = precomputed.get(file_rel) or precomputed.get(rel)
-                        if digest:
+                        progress["uploaded"] = True
+                        save_offload_progress(progress)
+                        if src.is_file():
+                            file_rel = normalize_rel(rel)
+                            digest = precomputed.get(file_rel) or precomputed.get(rel)
+                            if digest:
+                                print(
+                                    f"[cloud-vfs offload] uploaded {fmt_bytes(size)} bytes, "
+                                    f"local sha256 {digest}"
+                                )
+                        if delete_local:
+                            print(f"[cloud-vfs offload] upload complete, writing stub for {rel} …")
+                        else:
                             print(
-                                f"[cloud-vfs offload] verified {fmt_bytes(size)} bytes, "
-                                f"sha256 {digest}"
+                                f"[cloud-vfs offload] upload complete, "
+                                f"updating inventory for {rel} …"
                             )
-                    if delete_local:
-                        print(f"[cloud-vfs offload] upload complete, writing stub for {rel} …")
-                    else:
-                        print(
-                            f"[cloud-vfs offload] upload complete, updating inventory for {rel} …"
-                        )
-            else:
-                print(f"[cloud-vfs offload] upload already complete, skipping upload for {rel}")
-
-            entry = ensure_manifest_entry(
-                manifest,
-                rel,
-                archive=use_archive,
-                provider=cfg.provider,
-                is_dir=src.is_dir(),
-                blob=rel if src.is_file() else None,
-                blob_prefix=blob_prefix if src.is_dir() else None,
-            )
-            manifest_dirty = True
-            interrupt.on_flush = lambda: save_manifest(manifest) if manifest_dirty else None
-            meta: dict[str, Any] = {
-                "manifest_id": entry.get("id"),
-                "archive": use_archive,
-                "provider": cfg.provider,
-            }
-            indexed_files: set[str] = set(progress.get("indexed_files") or [])
-
-            def _on_indexed(file_rel: str) -> None:
-                if file_rel not in progress["indexed_files"]:
-                    progress["indexed_files"].append(file_rel)
-                save_offload_progress(progress)
-
-            if src.is_dir():
-                meta["blob_prefix"] = entry.get("blob_prefix") or rel.rstrip("/") + "/"
-                index_offloaded_path(
-                    rel,
-                    archive=use_archive,
-                    provider=cfg.provider,
-                    blob=None,
-                    blob_prefix=meta["blob_prefix"],
-                    entry=entry,
-                    precomputed=precomputed,
-                    keep_local=not delete_local,
-                    skip_files=indexed_files,
-                    on_file_indexed=_on_indexed,
-                )
-            else:
-                meta["blob"] = entry.get("blob") or rel
-                index_offloaded_path(
-                    rel,
-                    archive=use_archive,
-                    provider=cfg.provider,
-                    blob=meta["blob"],
-                    blob_prefix=None,
-                    entry=entry,
-                    precomputed=precomputed,
-                    keep_local=not delete_local,
-                    skip_files=indexed_files,
-                    on_file_indexed=_on_indexed,
-                )
-
-            if delete_local and not progress.get("stubbed"):
-                mark_offloaded(entry)
-                if src.is_dir():
-                    _write_dir_stub_after_upload(rel, meta)
                 else:
-                    write_stub(rel, meta)
-                progress["stubbed"] = True
-                save_offload_progress(progress)
-            elif not delete_local:
-                entry["status"] = "synced"
+                    print(f"[cloud-vfs offload] upload already complete, skipping upload for {rel}")
 
-            if not progress.get("manifest_saved"):
-                progress["manifest_saved"] = True
-                save_offload_progress(progress)
+                entry = ensure_manifest_entry(
+                    manifest,
+                    rel,
+                    archive=use_archive,
+                    provider=cfg.provider,
+                    is_dir=src.is_dir(),
+                    blob=rel if src.is_file() else None,
+                    blob_prefix=blob_prefix if src.is_dir() else None,
+                )
+                manifest_dirty = True
+                guard.on_flush = lambda: save_manifest(manifest) if manifest_dirty else None
+                meta: dict[str, Any] = {
+                    "manifest_id": entry.get("id"),
+                    "archive": use_archive,
+                    "provider": cfg.provider,
+                }
+                indexed_files: set[str] = set(progress.get("indexed_files") or [])
 
+                def _on_indexed(file_rel: str) -> None:
+                    if file_rel not in progress["indexed_files"]:
+                        progress["indexed_files"].append(file_rel)
+                    save_offload_progress(progress)
+
+                if src.is_dir():
+                    meta["blob_prefix"] = entry.get("blob_prefix") or rel.rstrip("/") + "/"
+                    index_offloaded_path(
+                        rel,
+                        archive=use_archive,
+                        provider=cfg.provider,
+                        blob=None,
+                        blob_prefix=meta["blob_prefix"],
+                        entry=entry,
+                        precomputed=precomputed,
+                        keep_local=not delete_local,
+                        skip_files=indexed_files,
+                        on_file_indexed=_on_indexed,
+                    )
+                else:
+                    meta["blob"] = entry.get("blob") or rel
+                    index_offloaded_path(
+                        rel,
+                        archive=use_archive,
+                        provider=cfg.provider,
+                        blob=meta["blob"],
+                        blob_prefix=None,
+                        entry=entry,
+                        precomputed=precomputed,
+                        keep_local=not delete_local,
+                        skip_files=indexed_files,
+                        on_file_indexed=_on_indexed,
+                    )
+
+                if delete_local and not progress.get("stubbed"):
+                    mark_offloaded(entry)
+                    if src.is_dir():
+                        _write_dir_stub_after_upload(rel, meta)
+                    else:
+                        write_stub(rel, meta)
+                    progress["stubbed"] = True
+                    save_offload_progress(progress)
+                elif not delete_local:
+                    entry["status"] = "synced"
+
+                if not progress.get("manifest_saved"):
+                    progress["manifest_saved"] = True
+                    save_offload_progress(progress)
+
+            clear_offload_progress(rel)
+            if delete_local:
+                print(f"OK: {rel} uploaded, local removed (freed {fmt_bytes(size)})")
+            else:
+                print(f"OK: {rel} uploaded, local kept ({fmt_bytes(size)} on disk)")
+            if batch_job:
+                set_job_path_status(batch_job, rel, STATUS_STUBBED)
             changed = True
-
-        clear_offload_progress(rel)
-        if delete_local:
-            print(f"OK: {rel} uploaded, local removed (freed {fmt_bytes(size)})")
-        else:
-            print(f"OK: {rel} uploaded, local kept ({fmt_bytes(size)} on disk)")
-        if batch_job:
-            set_job_path_status(batch_job, rel, STATUS_STUBBED)
-    if changed:
-        save_manifest(manifest)
-    if batch_job:
-        print(f"[cloud-vfs offload] {format_job_summary(batch_job)}")
-        if path_failures or job_has_failures(batch_job) or job_has_pending(batch_job):
-            return 1
-    return 1 if path_failures else 0
+        except (CloudStorageError, ValueError, FileNotFoundError, OSError) as exc:
+            _print_error(exc)
+            if interrupt is not None:
+                interrupt.flush()
+            if batch_job:
+                set_job_path_status(batch_job, rel, STATUS_FAILED, error=str(exc))
+            path_failures += 1
+            continue
+    return _offload_batch_exit(batch_job, path_failures, changed=changed, manifest=manifest)
 
 
 def cmd_register(paths: list[str]) -> int:

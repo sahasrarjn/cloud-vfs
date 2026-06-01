@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from cloud_vfs.project import project_root
 from cloud_vfs.storage.io_util import atomic_write_json
+from cloud_vfs.storage.offload_progress import clear_offload_progress
 from cloud_vfs.storage.paths import normalize_rel
 
 JOB_VERSION = 1
@@ -43,12 +45,31 @@ def load_offload_job(paths: list[str]) -> dict[str, Any] | None:
         return None
     try:
         data = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as exc:
+        print(
+            f"[cloud-vfs offload] ignoring corrupt job file {path.name}: {exc}",
+            file=sys.stderr,
+        )
         return None
     expected = sorted(normalize_rel(p) for p in paths)
     if sorted(data.get("paths") or []) != expected:
+        print(
+            f"[cloud-vfs offload] ignoring stale job file {path.name} (path list changed)",
+            file=sys.stderr,
+        )
+        return None
+    if data.get("version") != JOB_VERSION:
+        print(
+            f"[cloud-vfs offload] ignoring unsupported job version in {path.name}",
+            file=sys.stderr,
+        )
         return None
     return data
+
+
+def clear_job_offload_progress(paths: list[str]) -> None:
+    for rel in paths:
+        clear_offload_progress(normalize_rel(rel))
 
 
 def save_offload_job(job: dict[str, Any]) -> None:
@@ -78,6 +99,9 @@ def new_offload_job(
 def set_job_path_status(job: dict[str, Any], rel: str, status: str, *, error: str | None = None) -> None:
     rel = normalize_rel(rel)
     entry = job.setdefault("entries", {}).setdefault(rel, {})
+    current = entry.get("status")
+    if status == STATUS_SKIPPED and current in (STATUS_STUBBED, STATUS_FAILED):
+        return
     entry["status"] = status
     entry["updated_at"] = _now_iso()
     if error:
@@ -85,6 +109,13 @@ def set_job_path_status(job: dict[str, Any], rel: str, status: str, *, error: st
     elif "error" in entry:
         del entry["error"]
     save_offload_job(job)
+
+
+def mark_job_skipped_if_pending(job: dict[str, Any], rel: str) -> None:
+    rel = normalize_rel(rel)
+    entry = (job.get("entries") or {}).get(rel) or {}
+    if entry.get("status", STATUS_PENDING) == STATUS_PENDING:
+        set_job_path_status(job, rel, STATUS_SKIPPED)
 
 
 def format_job_summary(job: dict[str, Any]) -> str:
@@ -95,8 +126,21 @@ def format_job_summary(job: dict[str, Any]) -> str:
         counts[status] = counts.get(status, 0) + 1
     total = len(job.get("paths") or [])
     parts = [f"{counts.get(k, 0)} {k}" for k in (STATUS_STUBBED, STATUS_SKIPPED, STATUS_FAILED, STATUS_PENDING)]
-    summary = ", ".join(p for p in parts if not p.startswith("0 "))
-    return f"batch offload: {total} path(s) — {summary or 'no paths'}"
+    counts_text = ", ".join(p for p in parts if not p.startswith("0 "))
+    failed = [
+        rel
+        for rel, entry in (job.get("entries") or {}).items()
+        if (entry or {}).get("status") == STATUS_FAILED
+    ]
+    summary = f"batch offload: {total} path(s) — {counts_text or 'no paths'}"
+    if failed:
+        detail = ", ".join(
+            f"{rel}: {(job['entries'][rel] or {}).get('error', 'failed')}" for rel in failed[:3]
+        )
+        if len(failed) > 3:
+            detail += f", … and {len(failed) - 3} more"
+        summary += f" ({detail})"
+    return summary
 
 
 def job_has_failures(job: dict[str, Any]) -> bool:

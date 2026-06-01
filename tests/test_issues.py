@@ -471,6 +471,37 @@ class IssueFixTests(unittest.TestCase):
         self.assertEqual(upload_calls, [])
         self.assertTrue(is_ref(rel))
 
+    def test_offload_batch_post_upload_failure_marks_failed(self) -> None:
+        """Issue #15 — stub/index failures mark batch path failed and continue."""
+        paths = ["data/stub-fail.bin", "data/ok2.bin"]
+        for rel in paths:
+            path = self.root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(rel.encode())
+
+        from cloud_vfs.storage.stub import write_stub as real_write_stub
+
+        def fake_upload(rel, *args, **kwargs):
+            return rel
+
+        def fail_first_stub(rel, meta):
+            if rel == "data/stub-fail.bin":
+                raise OSError("disk full")
+            return real_write_stub(rel, meta)
+
+        with patch("cloud_vfs.cli.upload_path", side_effect=fake_upload):
+            with patch("cloud_vfs.cli.write_stub", side_effect=fail_first_stub):
+                rc = cmd_offload(
+                    paths,
+                    dry_run=False,
+                    archive_override=None,
+                    delete_local=True,
+                )
+
+        self.assertEqual(rc, 1)
+        self.assertTrue(is_real_local("data/stub-fail.bin"))
+        self.assertTrue(is_ref("data/ok2.bin"))
+
     def test_offload_binary_pth_dry_run_no_crash(self) -> None:
         """Issue #15 / #7 — large .pth binary must not crash is_ref_path during offload."""
         rel = "research/model_best.pth"

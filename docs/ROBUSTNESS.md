@@ -49,7 +49,7 @@ Agents must run **`guard` before any delete** of large `data/` paths.
 |----------|----------|
 | Multi-path `offload` | Job file in `.cloud-vfs/jobs/offload-<id>.json` tracks each path; failures do not stop the queue |
 | Re-run same batch | Paths already stubbed → `SKIP (not local)`; interrupted path resumes via `.cloud-vfs/offload-progress/` |
-| Interrupted single-file upload | If blob size matches local file, upload is skipped; otherwise full re-upload (use `azcopy` for parallel resume at scale) |
+| Interrupted single-file upload | If blob **size** matches local file, upload is skipped; otherwise full re-upload. Size match alone does not prove content integrity — use `offload --verify-only` before trusting partial uploads. |
 | Upload retries | `CLOUD_VFS_UPLOAD_RETRIES` (default 3) with exponential backoff on CLI failures |
 
 ```bash
