@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -14,6 +15,15 @@ from .config import ArchiveConfig
 from .errors import CloudStorageError
 from .paths import STUB_NAME, abs_path, normalize_rel
 
+PROGRESS_MIN_BYTES = 100 * 1024 * 1024  # show native CLI progress for large single-file uploads
+_STREAM_READ_SIZE = 4096
+
+
+def _is_ci() -> bool:
+    if os.environ.get("CI", "").lower() in ("1", "true", "yes"):
+        return True
+    return bool(os.environ.get("GITHUB_ACTIONS") or os.environ.get("GITLAB_CI"))
+
 
 def _default_idle_timeout_sec() -> float:
     raw = os.environ.get("CLOUD_VFS_SUBPROCESS_IDLE_TIMEOUT_SEC", "600")
@@ -21,6 +31,17 @@ def _default_idle_timeout_sec() -> float:
         return float(raw)
     except ValueError:
         return 600.0
+
+
+def _should_show_upload_progress(src: Path) -> bool:
+    if not sys.stdout.isatty() or _is_ci():
+        return False
+    if src.is_dir():
+        return True
+    try:
+        return src.stat().st_size >= PROGRESS_MIN_BYTES
+    except OSError:
+        return False
 
 
 def _run_monitored(
@@ -31,6 +52,7 @@ def _run_monitored(
     heartbeat_sec: float = 30.0,
     idle_timeout_sec: float | None = None,
     heartbeat_prefix: str = "[cloud-vfs offload]",
+    stream_output: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     idle_timeout_sec = idle_timeout_sec if idle_timeout_sec is not None else _default_idle_timeout_sec()
     if label:
@@ -46,10 +68,20 @@ def _run_monitored(
     def _reader() -> None:
         nonlocal last_output
         assert proc.stdout is not None
-        for line in proc.stdout:
-            with output_lock:
-                output_lines.append(line)
-                last_output = time.monotonic()
+        if stream_output:
+            while True:
+                chunk = proc.stdout.read(_STREAM_READ_SIZE)
+                if not chunk:
+                    break
+                with output_lock:
+                    output_lines.append(chunk)
+                    last_output = time.monotonic()
+                print(chunk, end="", flush=True)
+        else:
+            for line in proc.stdout:
+                with output_lock:
+                    output_lines.append(line)
+                    last_output = time.monotonic()
 
     def _heartbeat() -> None:
         start = time.monotonic()
@@ -61,6 +93,8 @@ def _run_monitored(
                 proc.kill()
                 stop.set()
                 return
+            if stream_output and idle < heartbeat_sec:
+                continue
             elapsed = int(time.monotonic() - start)
             mins, secs = divmod(elapsed, 60)
             elapsed_str = f"{mins}m{secs:02d}s" if mins else f"{secs}s"
@@ -92,6 +126,7 @@ def _run(cmd: list[str], *, action: str, **kwargs: Any) -> subprocess.CompletedP
     label = kwargs.pop("label", None)
     heartbeat_prefix = kwargs.pop("heartbeat_prefix", "[cloud-vfs]")
     idle_timeout_sec = kwargs.pop("idle_timeout_sec", None)
+    stream_output = kwargs.pop("stream_output", False)
     try:
         return _run_monitored(
             cmd,
@@ -99,6 +134,7 @@ def _run(cmd: list[str], *, action: str, **kwargs: Any) -> subprocess.CompletedP
             label=label,
             heartbeat_prefix=heartbeat_prefix,
             idle_timeout_sec=idle_timeout_sec,
+            stream_output=stream_output,
         )
     except subprocess.CalledProcessError:
         raise
@@ -249,24 +285,35 @@ def upload_path(
     if not src.exists():
         raise FileNotFoundError(rel)
     key_base = (blob_prefix or rel).rstrip("/")
+    show_progress = _should_show_upload_progress(src)
 
     if cfg.provider == "aws":
         if src.is_dir():
             sample = _first_data_file(src)
             uri = f"s3://{cfg.bucket}/{key_base}/"
+            sync_cmd = _aws_base(cfg) + ["s3", "sync", str(src), uri]
+            if not show_progress:
+                sync_cmd.append("--only-show-errors")
             _run(
-                _aws_base(cfg) + ["s3", "sync", str(src), uri, "--only-show-errors"],
+                sync_cmd,
                 action=f"sync upload to s3://{cfg.bucket}/{key_base}/",
                 label=progress_label,
+                stream_output=show_progress,
             )
             key = f"{key_base}/{sample.relative_to(src).as_posix()}"
         else:
             key = key_base if blob_prefix else rel
             uri = f"s3://{cfg.bucket}/{key}"
+            cp_cmd = _aws_base(cfg) + ["s3", "cp", str(src), uri]
+            if show_progress:
+                cp_cmd.append("--progress-multiline")
+            else:
+                cp_cmd.append("--no-progress")
             _run(
-                _aws_base(cfg) + ["s3", "cp", str(src), uri],
+                cp_cmd,
                 action=f"upload s3://{cfg.bucket}/{key}",
                 label=progress_label,
+                stream_output=show_progress,
             )
         _run(
             _aws_base(cfg) + ["s3", "ls", f"s3://{cfg.bucket}/{key}"],
@@ -278,51 +325,58 @@ def upload_path(
     if src.is_dir():
         sample = _first_data_file(src)
         dest_path = key_base if blob_prefix else rel
+        batch_cmd = [
+            "az",
+            "storage",
+            "blob",
+            "upload-batch",
+            "--account-name",
+            cfg.account or "",
+            "--account-key",
+            cfg.key or "",
+            "--destination",
+            cfg.bucket,
+            "--source",
+            str(src),
+            "--destination-path",
+            dest_path,
+            "--overwrite",
+            "true",
+        ]
+        if not show_progress:
+            batch_cmd.append("--no-progress")
         _run(
-            [
-                "az",
-                "storage",
-                "blob",
-                "upload-batch",
-                "--account-name",
-                cfg.account or "",
-                "--account-key",
-                cfg.key or "",
-                "--destination",
-                cfg.bucket,
-                "--source",
-                str(src),
-                "--destination-path",
-                dest_path,
-                "--overwrite",
-                "true",
-                "--no-progress",
-            ],
+            batch_cmd,
             action=f"upload-batch azure {dest_path}/",
             label=progress_label,
+            stream_output=show_progress,
         )
         blob_name = f"{dest_path}/{sample.relative_to(src).as_posix()}"
     else:
+        upload_cmd = [
+            "az",
+            "storage",
+            "blob",
+            "upload",
+            "--account-name",
+            cfg.account or "",
+            "--account-key",
+            cfg.key or "",
+            "--container-name",
+            cfg.bucket,
+            "--name",
+            rel,
+            "--file",
+            str(src),
+            "--overwrite",
+        ]
+        if not show_progress:
+            upload_cmd.append("--no-progress")
         _run(
-            [
-                "az",
-                "storage",
-                "blob",
-                "upload",
-                "--account-name",
-                cfg.account or "",
-                "--account-key",
-                cfg.key or "",
-                "--container-name",
-                cfg.bucket,
-                "--name",
-                rel,
-                "--file",
-                str(src),
-                "--overwrite",
-            ],
+            upload_cmd,
             action=f"upload azure blob {rel}",
             label=progress_label,
+            stream_output=show_progress,
         )
         blob_name = rel
 
