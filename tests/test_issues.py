@@ -411,6 +411,77 @@ class IssueFixTests(unittest.TestCase):
         self.assertIn("line-one", output)
         self.assertIn("line-two", output)
 
+    def test_offload_batch_continues_after_failure(self) -> None:
+        """Issue #15 — batch offload does not stop at first path failure."""
+        paths = ["data/ok.bin", "data/fail.bin", "data/also.bin"]
+        for rel in paths:
+            path = self.root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(rel.encode())
+
+        calls: list[str] = []
+
+        def fake_upload(rel, *args, **kwargs):
+            calls.append(rel)
+            if rel == "data/fail.bin":
+                from cloud_vfs.storage.errors import CloudStorageError
+
+                raise CloudStorageError("upload", [], "simulated failure", 1)
+            return rel
+
+        with patch("cloud_vfs.cli.upload_path", side_effect=fake_upload):
+            rc = cmd_offload(
+                paths,
+                dry_run=False,
+                archive_override=None,
+                delete_local=True,
+            )
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(calls, ["data/ok.bin", "data/fail.bin", "data/also.bin"])
+        self.assertTrue(is_ref("data/ok.bin"))
+        self.assertTrue(is_ref("data/also.bin"))
+        self.assertTrue(is_real_local("data/fail.bin"))
+
+    def test_offload_skips_upload_when_blob_size_matches(self) -> None:
+        """Issue #15 — resume detects complete blob by content length."""
+        from cloud_vfs.storage.backends import blob_matches_local_size
+        from cloud_vfs.storage.config import ArchiveConfig
+
+        rel = "data/checkpoint.pth"
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x00" * 4096)
+
+        cfg = ArchiveConfig(
+            name="local_archive",
+            provider="azure",
+            bucket="test-container",
+            account="acct",
+            key="key",
+        )
+        upload_calls: list[str] = []
+
+        with patch("cloud_vfs.storage.backends.blob_content_length", return_value=4096):
+            self.assertTrue(blob_matches_local_size(cfg, rel, path))
+            with patch("cloud_vfs.cli.upload_path", side_effect=lambda r, *a, **k: upload_calls.append(r) or r):
+                rc = cmd_offload([rel], dry_run=False, archive_override=None, delete_local=True)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(upload_calls, [])
+        self.assertTrue(is_ref(rel))
+
+    def test_offload_binary_pth_dry_run_no_crash(self) -> None:
+        """Issue #15 / #7 — large .pth binary must not crash is_ref_path during offload."""
+        rel = "research/model_best.pth"
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(os.urandom(1024 * 1024))
+
+        rc = cmd_offload([rel], dry_run=True, archive_override=None, delete_local=True)
+        self.assertEqual(rc, 0)
+        self.assertTrue(is_real_local(rel))
+
     def test_run_monitored_streams_carriage_return_progress(self) -> None:
         """Issue #13 — chunk streaming forwards \\r-based CLI progress updates."""
         from cloud_vfs.storage.backends import _run_monitored

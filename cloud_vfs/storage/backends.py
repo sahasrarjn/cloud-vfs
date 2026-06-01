@@ -17,6 +17,8 @@ from .paths import STUB_NAME, abs_path, normalize_rel
 
 PROGRESS_MIN_BYTES = 100 * 1024 * 1024  # show native CLI progress for large single-file uploads
 _STREAM_READ_SIZE = 4096
+_UPLOAD_RETRY_ATTEMPTS = 3
+_UPLOAD_RETRY_BASE_SEC = 5.0
 
 
 def _is_ci() -> bool:
@@ -122,24 +124,119 @@ def _run_monitored(
     return subprocess.CompletedProcess(cmd, rc, stdout=stdout)
 
 
+def _upload_retry_attempts() -> int:
+    raw = os.environ.get("CLOUD_VFS_UPLOAD_RETRIES", str(_UPLOAD_RETRY_ATTEMPTS))
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return _UPLOAD_RETRY_ATTEMPTS
+
+
 def _run(cmd: list[str], *, action: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
     label = kwargs.pop("label", None)
     heartbeat_prefix = kwargs.pop("heartbeat_prefix", "[cloud-vfs]")
     idle_timeout_sec = kwargs.pop("idle_timeout_sec", None)
     stream_output = kwargs.pop("stream_output", False)
+    retries = kwargs.pop("retries", 1)
     try:
-        return _run_monitored(
-            cmd,
-            action=action,
-            label=label,
-            heartbeat_prefix=heartbeat_prefix,
-            idle_timeout_sec=idle_timeout_sec,
-            stream_output=stream_output,
-        )
+        last_exc: CloudStorageError | None = None
+        delay = _UPLOAD_RETRY_BASE_SEC
+        for attempt in range(retries):
+            try:
+                return _run_monitored(
+                    cmd,
+                    action=action,
+                    label=label if attempt == 0 else None,
+                    heartbeat_prefix=heartbeat_prefix,
+                    idle_timeout_sec=idle_timeout_sec,
+                    stream_output=stream_output,
+                )
+            except CloudStorageError as exc:
+                last_exc = exc
+                if attempt + 1 >= retries:
+                    raise
+                print(
+                    f"{heartbeat_prefix} upload failed, retry {attempt + 2}/{retries} "
+                    f"in {int(delay)}s …",
+                    flush=True,
+                )
+                time.sleep(delay)
+                delay *= 2
+        if last_exc:
+            raise last_exc
+        raise CloudStorageError(action, cmd, "upload retries exhausted", 1)
     except subprocess.CalledProcessError:
         raise
     except CloudStorageError:
         raise
+
+
+def blob_content_length(cfg: ArchiveConfig, blob_key: str) -> int | None:
+    """Return blob size in bytes, or None if the object does not exist."""
+    if cfg.provider == "aws":
+        try:
+            result = _run(
+                _aws_base(cfg)
+                + [
+                    "s3api",
+                    "head-object",
+                    "--bucket",
+                    cfg.bucket,
+                    "--key",
+                    blob_key,
+                ],
+                action=f"head s3://{cfg.bucket}/{blob_key}",
+                idle_timeout_sec=120.0,
+            )
+        except CloudStorageError:
+            return None
+        data = json.loads(result.stdout or "{}")
+        length = data.get("ContentLength")
+        return int(length) if length is not None else None
+
+    try:
+        result = _run(
+            [
+                "az",
+                "storage",
+                "blob",
+                "show",
+                "--account-name",
+                cfg.account or "",
+                "--account-key",
+                cfg.key or "",
+                "--container-name",
+                cfg.bucket,
+                "--name",
+                blob_key,
+                "-o",
+                "json",
+            ],
+            action=f"show azure blob {blob_key}",
+            idle_timeout_sec=120.0,
+        )
+    except CloudStorageError:
+        return None
+    data = json.loads(result.stdout or "{}")
+    props = data.get("properties") or {}
+    length = props.get("contentLength")
+    return int(length) if length is not None else None
+
+
+def blob_matches_local_size(
+    cfg: ArchiveConfig,
+    blob_key: str,
+    local_path: Path,
+) -> bool:
+    """True when blob exists and its size matches the local file (upload resume)."""
+    if not local_path.is_file():
+        return False
+    try:
+        local_size = local_path.stat().st_size
+    except OSError:
+        return False
+    blob_size = blob_content_length(cfg, blob_key)
+    return blob_size is not None and blob_size == local_size
 
 
 def _dir_size(path: Path) -> int:
@@ -299,6 +396,7 @@ def upload_path(
                 action=f"sync upload to s3://{cfg.bucket}/{key_base}/",
                 label=progress_label,
                 stream_output=show_progress,
+                retries=_upload_retry_attempts(),
             )
             key = f"{key_base}/{sample.relative_to(src).as_posix()}"
         else:
@@ -314,6 +412,7 @@ def upload_path(
                 action=f"upload s3://{cfg.bucket}/{key}",
                 label=progress_label,
                 stream_output=show_progress,
+                retries=_upload_retry_attempts(),
             )
         _run(
             _aws_base(cfg) + ["s3", "ls", f"s3://{cfg.bucket}/{key}"],
@@ -350,6 +449,7 @@ def upload_path(
             action=f"upload-batch azure {dest_path}/",
             label=progress_label,
             stream_output=show_progress,
+            retries=_upload_retry_attempts(),
         )
         blob_name = f"{dest_path}/{sample.relative_to(src).as_posix()}"
     else:
@@ -377,6 +477,7 @@ def upload_path(
             action=f"upload azure blob {rel}",
             label=progress_label,
             stream_output=show_progress,
+            retries=_upload_retry_attempts(),
         )
         blob_name = rel
 

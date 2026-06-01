@@ -45,6 +45,19 @@ from cloud_vfs.storage.manifest import (
     mark_offloaded,
     save_manifest,
 )
+from cloud_vfs.storage.backends import blob_matches_local_size
+from cloud_vfs.storage.offload_job import (
+    STATUS_FAILED,
+    STATUS_SKIPPED,
+    STATUS_STUBBED,
+    format_job_summary,
+    job_has_failures,
+    job_has_pending,
+    load_offload_job,
+    new_offload_job,
+    save_offload_job,
+    set_job_path_status,
+)
 from cloud_vfs.storage.offload_progress import (
     OffloadInterruptState,
     clear_offload_progress,
@@ -500,7 +513,27 @@ def cmd_offload(
             return 0
         if dry_run:
             print("Would offload (confirm, then run without --dry-run):")
+
+    batch_job: dict[str, Any] | None = None
+    if len(paths) > 1 and not dry_run and not verify_only:
+        use_archive = normalize_archive(archive_override or "local_archive")
+        batch_job = load_offload_job(paths)
+        if batch_job and (
+            batch_job.get("archive") != use_archive
+            or batch_job.get("delete_local") != delete_local
+        ):
+            batch_job = new_offload_job(
+                paths, archive=use_archive, delete_local=delete_local
+            )
+        elif not batch_job:
+            batch_job = new_offload_job(
+                paths, archive=use_archive, delete_local=delete_local
+            )
+        save_offload_job(batch_job)
+        print(f"[cloud-vfs offload] {format_job_summary(batch_job)}")
+
     changed = False
+    path_failures = 0
     for raw in paths:
         try:
             rel = normalize_rel(raw)
@@ -533,6 +566,8 @@ def cmd_offload(
 
         if not src.exists() or not is_real_local(rel):
             print(f"SKIP (not local): {rel}")
+            if batch_job:
+                set_job_path_status(batch_job, rel, STATUS_SKIPPED)
             continue
         size = tree_size(src)
         if dry_run:
@@ -575,26 +610,53 @@ def cmd_offload(
         with _offload_interrupt_guard(manifest, progress) as interrupt:
             manifest_dirty = False
             if not progress.get("uploaded"):
-                print(f"offload: {rel} -> {cfg.provider}/{use_archive} ({fmt_bytes(size)}, {action})")
-                try:
-                    upload_path(
-                        rel,
-                        use_archive,
-                        env,
-                        mcfg,
-                        blob_prefix=blob_prefix,
-                        progress_label=progress_label,
+                blob_key = rel if src.is_file() else None
+                if (
+                    not no_resume
+                    and src.is_file()
+                    and blob_key
+                    and blob_matches_local_size(cfg, blob_key, src)
+                ):
+                    print(
+                        f"[cloud-vfs offload] blob already complete "
+                        f"({fmt_bytes(size)}), skipping upload for {rel}"
                     )
-                except (CloudStorageError, ValueError, FileNotFoundError) as exc:
-                    _print_error(exc)
-                    interrupt.flush()
-                    return 1
-                progress["uploaded"] = True
-                save_offload_progress(progress)
-                if delete_local:
-                    print(f"[cloud-vfs offload] upload complete, writing stub for {rel} …")
+                    progress["uploaded"] = True
+                    save_offload_progress(progress)
                 else:
-                    print(f"[cloud-vfs offload] upload complete, updating inventory for {rel} …")
+                    print(f"offload: {rel} -> {cfg.provider}/{use_archive} ({fmt_bytes(size)}, {action})")
+                    try:
+                        upload_path(
+                            rel,
+                            use_archive,
+                            env,
+                            mcfg,
+                            blob_prefix=blob_prefix,
+                            progress_label=progress_label,
+                        )
+                    except (CloudStorageError, ValueError, FileNotFoundError) as exc:
+                        _print_error(exc)
+                        interrupt.flush()
+                        if batch_job:
+                            set_job_path_status(batch_job, rel, STATUS_FAILED, error=str(exc))
+                        path_failures += 1
+                        continue
+                    progress["uploaded"] = True
+                    save_offload_progress(progress)
+                    if src.is_file():
+                        file_rel = normalize_rel(rel)
+                        digest = precomputed.get(file_rel) or precomputed.get(rel)
+                        if digest:
+                            print(
+                                f"[cloud-vfs offload] verified {fmt_bytes(size)} bytes, "
+                                f"sha256 {digest}"
+                            )
+                    if delete_local:
+                        print(f"[cloud-vfs offload] upload complete, writing stub for {rel} …")
+                    else:
+                        print(
+                            f"[cloud-vfs offload] upload complete, updating inventory for {rel} …"
+                        )
             else:
                 print(f"[cloud-vfs offload] upload already complete, skipping upload for {rel}")
 
@@ -672,9 +734,15 @@ def cmd_offload(
             print(f"OK: {rel} uploaded, local removed (freed {fmt_bytes(size)})")
         else:
             print(f"OK: {rel} uploaded, local kept ({fmt_bytes(size)} on disk)")
+        if batch_job:
+            set_job_path_status(batch_job, rel, STATUS_STUBBED)
     if changed:
         save_manifest(manifest)
-    return 0
+    if batch_job:
+        print(f"[cloud-vfs offload] {format_job_summary(batch_job)}")
+        if path_failures or job_has_failures(batch_job) or job_has_pending(batch_job):
+            return 1
+    return 1 if path_failures else 0
 
 
 def cmd_register(paths: list[str]) -> int:

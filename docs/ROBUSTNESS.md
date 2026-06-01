@@ -43,6 +43,22 @@ Agents must run **`guard` before any delete** of large `data/` paths.
 | Rename without `scan`/manifest update | **Orphan** blob at old key; use `reconcile --orphan-blobs` |
 | Same bytes, two paths | **Two** blobs (path-keyed, not content-deduped) |
 
+## Large-file offload (batch + resume)
+
+| Scenario | Behavior |
+|----------|----------|
+| Multi-path `offload` | Job file in `.cloud-vfs/jobs/offload-<id>.json` tracks each path; failures do not stop the queue |
+| Re-run same batch | Paths already stubbed → `SKIP (not local)`; interrupted path resumes via `.cloud-vfs/offload-progress/` |
+| Interrupted single-file upload | If blob size matches local file, upload is skipped; otherwise full re-upload (use `azcopy` for parallel resume at scale) |
+| Upload retries | `CLOUD_VFS_UPLOAD_RETRIES` (default 3) with exponential backoff on CLI failures |
+
+```bash
+cloud-vfs offload path1 path2 path3   # partial failure → exit 1 + summary
+cloud-vfs offload path1 path2 path3   # re-run: skips done, continues rest
+```
+
+Binary checkpoints (`.pth`, `.npy`, etc.) require **≥ 0.5.2** (bounded stub probe; never `read_text()` on large files).
+
 ## Commands
 
 ```bash

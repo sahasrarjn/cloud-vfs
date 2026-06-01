@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.6
+
+### Large-file offload robustness ([#15](https://github.com/sahasrarjn/cloud-vfs/issues/15))
+
+- **Batch jobs** — multi-path `offload` persists state under `.cloud-vfs/jobs/`; re-run skips stubbed paths and continues the queue; non-zero exit when any path failed or is still pending
+- **Upload resume** — before re-uploading a single file, checks blob `contentLength` vs local size and skips upload when they match
+- **Retries** — transient `az`/`aws` upload failures retry with backoff (`CLOUD_VFS_UPLOAD_RETRIES`, default 3)
+- **Verify output** — prints verified byte size and sha256 after single-file upload
+- Docs: [ROBUSTNESS.md](docs/ROBUSTNESS.md) batch/resume section
+
 ## 0.5.5
 
 ### Source / target materialize ([#11](https://github.com/sahasrarjn/cloud-vfs/issues/11))
