@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+*.egg-info/
+.DS_Store
+.cloud-vfs/secrets.env
+.env
+marketing/
+.cursor/
