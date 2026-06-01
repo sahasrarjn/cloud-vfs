@@ -3,14 +3,26 @@
 ## One-time setup
 
 1. Create a project on [PyPI](https://pypi.org/) named `cloud-vfs` (or claim the name if available).
-2. Configure **trusted publishing** (recommended) on PyPI:
-   - Owner: your GitHub user/org
-   - Repository: `sahasrarjn/cloud-vfs`
-   - Workflow: `.github/workflows/publish.yml`
-   - Environment name: `pypi` (matches the workflow `environment: pypi`)
+2. Configure **trusted publishing** (recommended) on PyPI — open [cloud-vfs publishing settings](https://pypi.org/manage/project/cloud-vfs/settings/publishing/) and add a **GitHub** publisher with **exactly**:
+   - **Owner**: `sahasrarjn`
+   - **Repository name**: `cloud-vfs`
+   - **Workflow name**: `publish.yml` (filename only, not the full path)
+   - **Environment name**: `pypi` (must match the workflow `environment: pypi`)
 3. In GitHub repo **Settings → Environments**, create environment `pypi` (no secrets needed for trusted publishing).
 
-Alternative: store `PYPI_API_TOKEN` as a repo secret and remove `id-token: write` / trusted publishing (not configured in the default workflow).
+Alternative: store a PyPI API token as the repo secret `PYPI_API_TOKEN`, add `password: ${{ secrets.PYPI_API_TOKEN }}` to the publish step, and remove `id-token: write` (API tokens disable OIDC trusted publishing).
+
+### Troubleshooting `invalid-publisher`
+
+If the publish workflow fails with:
+
+```text
+invalid-publisher: valid token, but no corresponding publisher
+```
+
+PyPI received a valid GitHub OIDC token but has **no trusted publisher** matching the workflow claims. Fix step 2 above — the owner, repository, workflow filename, and environment name must match exactly.
+
+After adding the publisher on PyPI, re-run the failed workflow from **Actions → Publish to PyPI → Re-run jobs**, or trigger **Run workflow** manually (`workflow_dispatch`).
 
 ## Release checklist
 
