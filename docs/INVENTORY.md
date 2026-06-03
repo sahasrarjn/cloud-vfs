@@ -99,3 +99,7 @@ cloud-vfs reconcile --json
 ## Design rationale
 
 **Track large `data/` only.** Code belongs in git. Small configs and READMEs use manifest `blob` fields without per-file inventory. This keeps indexes small (tens of rows, not thousands) while preserving explicit cloud paths for embeddings, checkpoints, and multi-GB CSVs.
+
+## Teams
+
+For shared repos — what to commit vs gitignore, the clone → configure → fetch checklist, committed vs ephemeral shards, and who offloads vs fetches on which machine — see [TEAM.md](TEAM.md).
