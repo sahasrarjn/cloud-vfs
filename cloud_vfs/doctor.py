@@ -89,6 +89,21 @@ def _check_policy() -> CheckResult:
         return CheckResult("inventory-policy", "fail", str(exc))
 
 
+def _check_download_temps() -> CheckResult | None:
+    """Warn about stale download temps that re-bill egress if a retry re-downloads (issue #21)."""
+    from cloud_vfs.storage.cleanup import find_download_temps, human_bytes
+
+    temps = find_download_temps()
+    if not temps:
+        return None
+    total = sum(size for _, size in temps)
+    return CheckResult(
+        "download-temps",
+        "warn",
+        f"{len(temps)} stale temp(s), {human_bytes(total)} — run: cloud-vfs cleanup-downloads",
+    )
+
+
 def _check_archive() -> CheckResult:
     try:
         env = load_cloud_env()
@@ -343,6 +358,9 @@ def run_checks(
         )
     results.append(_check_manifest())
     results.append(_check_policy())
+    temps_check = _check_download_temps()
+    if temps_check is not None:
+        results.append(temps_check)
 
     try:
         env = load_cloud_env()

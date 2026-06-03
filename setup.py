@@ -7,7 +7,7 @@ readme = Path("README.md").read_text(encoding="utf-8")
 
 setup(
     name="cloud-vfs",
-    version="0.5.7",
+    version="0.5.8",
     description="Manual Azure blob virtual filesystem",
     long_description=readme,
     long_description_content_type="text/markdown",

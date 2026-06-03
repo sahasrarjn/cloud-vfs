@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.8
+
+### Download temp hygiene + egress guardrails ([#21](https://github.com/sahasrarjn/cloud-vfs/issues/21))
+
+- **`cleanup-downloads`** — new command removes stale `.azDownload-*` / `*.part` / `fetch-*` temps left by interrupted or killed fetches; `--dry-run` lists reclaimable bytes, `--older-than-hours N` scopes by age (default: all incomplete temps)
+- **`doctor`** — warns when stale download temps are present, with the reclaim command
+- **`ensure`** — already-materialized paths now say `skipping fetch, no egress` to make redundant-download avoidance explicit
+- **Docs** — `ROBUSTNESS.md` documents per-GB egress cost, the temp flavors, and compute-side fetch guidance
+
 ## 0.5.7
 
 ### Path-stable offload contract ([#17](https://github.com/sahasrarjn/cloud-vfs/issues/17))

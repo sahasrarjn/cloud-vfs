@@ -108,6 +108,7 @@ Inventory rows are created by **`offload`**, **`register`**, and **`reconcile --
 | `cloud-vfs status [--drift]` | Manifest paths + inventory counts |
 | `cloud-vfs reconcile [--from-blob] [--fix-index]` | Drift audit; rebuild index from blob |
 | `cloud-vfs prune` | Remove inventory rows below min size |
+| `cloud-vfs cleanup-downloads [--dry-run]` | Remove stale download temps from interrupted fetches |
 | `cloud-vfs offload --dry-run` | Preview offload candidates |
 | `cloud-vfs offload <paths>` | Upload + index (large files) + inline ref or dir stub |
 | `cloud-vfs materialize-stubs` | Write inline/sidecar refs; migrate legacy file sidecars |
