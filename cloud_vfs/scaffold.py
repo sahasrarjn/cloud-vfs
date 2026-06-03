@@ -36,6 +36,7 @@ def cmd_init(project: Path, *, install_skill: bool) -> int:
     lines = [
         ".cloud-vfs/secrets.env",
         ".cloud-vfs/.tmp",
+        ".cloud-vfs/locks",
         "**/.cloudstub",
         ".cloud-vfs/index/data/generated/",
         ".cloud-vfs/index/code.json",

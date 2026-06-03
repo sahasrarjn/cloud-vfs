@@ -71,6 +71,7 @@ from cloud_vfs.storage.offload_job import (
     save_offload_job,
     set_job_path_status,
 )
+from cloud_vfs.storage.locks import path_lock
 from cloud_vfs.storage.offload_progress import (
     OffloadInterruptState,
     clear_offload_progress,
@@ -402,24 +403,36 @@ def cmd_ensure(
             if plan.get("blob_url"):
                 print(f"  blob: {plan['blob_url']}")
             continue
-        print(f"fetch: {rel} ({cfg.provider}/{archive})")
-        progress_label = f"[cloud-vfs ensure] fetching {rel} ({cfg.provider}/{archive})"
-        try:
-            nbytes = _safe_fetch(rel, meta, archive, env, mcfg, progress_label=progress_label)
-        except (CloudStorageError, FileNotFoundError, OSError) as exc:
-            _print_error(exc)
-            return 1
-        if verify:
+        def _note_wait(rel: str = rel) -> None:
+            print(
+                f"[cloud-vfs ensure] another process is fetching {rel} — waiting …",
+                flush=True,
+            )
+
+        with path_lock(rel, on_wait=_note_wait):
+            # Re-check under the lock: a concurrent ensure may have just finished,
+            # so we can reuse its result instead of paying for a duplicate download.
+            if is_real_local(rel):
+                print(f"local: {rel} (materialized by concurrent ensure — skipping fetch, no egress)")
+                continue
+            print(f"fetch: {rel} ({cfg.provider}/{archive})")
+            progress_label = f"[cloud-vfs ensure] fetching {rel} ({cfg.provider}/{archive})"
             try:
-                verify_fetched_tree(rel)
-            except VerifyError as exc:
+                nbytes = _safe_fetch(rel, meta, archive, env, mcfg, progress_label=progress_label)
+            except (CloudStorageError, FileNotFoundError, OSError) as exc:
                 _print_error(exc)
                 return 1
-        mark_inventory_fetched(rel)
-        if entry:
-            mark_fetched(entry)
-            changed = True
-        print(f"OK: {rel} ({fmt_bytes(nbytes)})" + (" verified" if verify else ""))
+            if verify:
+                try:
+                    verify_fetched_tree(rel)
+                except VerifyError as exc:
+                    _print_error(exc)
+                    return 1
+            mark_inventory_fetched(rel)
+            if entry:
+                mark_fetched(entry)
+                changed = True
+            print(f"OK: {rel} ({fmt_bytes(nbytes)})" + (" verified" if verify else ""))
     if changed:
         save_manifest(manifest)
     return 0
