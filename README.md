@@ -182,6 +182,7 @@ Never hand-edit `.cloud-vfs/index/*.json`.
 - [docs/AGENTS.md](docs/AGENTS.md) — rules for coding agents
 - [docs/ROBUSTNESS.md](docs/ROBUSTNESS.md) — verify, guard, orphan blobs, prod vs cloud-vfs bucket
 - [docs/YOUR_REPO.md](docs/YOUR_REPO.md) — scan and offload in your existing repo
+- [docs/TEAM.md](docs/TEAM.md) — multi-contributor playbook: commit vs blob vs inventory, clone workflow
 - [docs/TRY.md](docs/TRY.md) — 5-minute try guide
 - [examples/minimal-demo/](examples/minimal-demo/) — demo sources (also bundled in `cloud-vfs try`)
 - [docs/PUBLISHING.md](docs/PUBLISHING.md) — PyPI release process
