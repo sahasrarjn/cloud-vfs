@@ -376,7 +376,7 @@ def cmd_ensure(
             if dry_run:
                 print(f"local (skip): {rel}")
             else:
-                print(f"local: {rel}")
+                print(f"local: {rel} (already materialized — skipping fetch, no egress)")
             continue
         try:
             meta = _resolve_fetch_meta(rel, entry, manifest)
@@ -1015,6 +1015,29 @@ def cmd_offload(
     return _offload_batch_exit(batch_job, path_failures, changed=changed, manifest=manifest)
 
 
+def cmd_cleanup_downloads(*, dry_run: bool, older_than_hours: float | None) -> int:
+    """Remove stale .azDownload-*/.part/fetch-* temps left by interrupted downloads (issue #21)."""
+    from cloud_vfs.storage.cleanup import cleanup_download_temps
+
+    matched, removed, freed = cleanup_download_temps(
+        older_than_hours=older_than_hours, dry_run=dry_run
+    )
+    if not matched:
+        scope = "" if older_than_hours is None else f" older than {older_than_hours:g}h"
+        print(f"No download temps{scope} under {temp_dir()}")
+        return 0
+    for path, size in matched:
+        print(f"  {fmt_bytes(size):>9}  {path}")
+    if dry_run:
+        print(
+            f"\nWould remove {len(matched)} temp(s), freeing {fmt_bytes(freed)} "
+            "(re-run without --dry-run to delete)."
+        )
+    else:
+        print(f"\nremoved {removed} temp(s), freed {fmt_bytes(freed)}")
+    return 0
+
+
 def cmd_register(paths: list[str]) -> int:
     if not paths:
         print("Usage: cloud-vfs register <paths...>", file=sys.stderr)
@@ -1364,6 +1387,23 @@ def main(argv: list[str] | None = None) -> int:
         help=argparse.SUPPRESS,
     )
 
+    p_cleanup = sub.add_parser(
+        "cleanup-downloads",
+        help="Remove stale download temps (.azDownload-*/.part/fetch-*) from interrupted fetches",
+    )
+    p_cleanup.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="List temps and reclaimable bytes without deleting",
+    )
+    p_cleanup.add_argument(
+        "--older-than-hours",
+        type=float,
+        default=None,
+        metavar="N",
+        help="Only remove temps older than N hours (default: all incomplete temps)",
+    )
+
     sub.add_parser("materialize-stubs", help="Write .cloudstub for offloaded manifest entries")
 
     p_doctor = sub.add_parser("doctor", help="Check install, project config, CLI, and cloud access")
@@ -1451,6 +1491,11 @@ def main(argv: list[str] | None = None) -> int:
                 normalize_archive(args.source_archive) if getattr(args, "source_archive", None) else None
             ),
             dry_run=args.dry_run,
+        )
+    if args.cmd == "cleanup-downloads":
+        return cmd_cleanup_downloads(
+            dry_run=args.dry_run,
+            older_than_hours=args.older_than_hours,
         )
     if args.cmd == "materialize-stubs":
         return cmd_materialize_stubs()

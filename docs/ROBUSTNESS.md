@@ -59,12 +59,47 @@ cloud-vfs offload path1 path2 path3   # re-run: skips done, continues rest
 
 Binary checkpoints (`.pth`, `.npy`, etc.) require **≥ 0.5.2** (bounded stub probe; never `read_text()` on large files).
 
+## Egress cost and download temp hygiene
+
+Cloud providers bill **per GB downloaded** to the public internet. Fetching a multi-GB
+checkpoint or embedding dict to a laptop costs real money every time — and an interrupted or
+retried `ensure` can pay it twice if a half-written temp is left behind and the retry starts over.
+
+cloud-vfs keeps download scratch under `.cloud-vfs/.tmp/` and renames atomically into place on
+success. A clean fetch leaves nothing behind. But a hard kill (Ctrl-C, SIGKILL, OOM) can orphan:
+
+| Temp | Source |
+|------|--------|
+| `fetch-<name>.<hex>` | cloud-vfs `ensure` scratch destination |
+| `<name>.part` | in-progress atomic-rename target |
+| `.azDownload-*` | azcopy's own per-job temp files |
+
+Each orphan is a **full-size** copy that re-bills egress if a retry re-downloads. Hygiene:
+
+```bash
+cloud-vfs ensure data/big.npy --dry-run   # preview size + transport BEFORE paying egress
+cloud-vfs cleanup-downloads --dry-run     # list orphaned temps + reclaimable bytes
+cloud-vfs cleanup-downloads               # delete them (default: all incomplete temps)
+cloud-vfs cleanup-downloads --older-than-hours 24
+```
+
+`cloud-vfs doctor` also warns when stale temps are present. To avoid egress entirely:
+
+- **Fetch compute-side, not laptop-side.** Run `ensure` on the GPU/training node (in-region,
+  egress-free) rather than pulling multi-GB blobs to a Mac.
+- `ensure` on an **already-materialized** path is a no-op and downloads nothing
+  (`local: … (already materialized — skipping fetch, no egress)`).
+
 ## Commands
 
 ```bash
 # After fetch — default verifies sha256
 cloud-vfs ensure data/run
 cloud-vfs ensure data/run --no-verify
+
+# Reclaim disk + avoid double egress from interrupted downloads
+cloud-vfs cleanup-downloads --dry-run
+cloud-vfs cleanup-downloads
 
 # Audit
 cloud-vfs reconcile --drift
