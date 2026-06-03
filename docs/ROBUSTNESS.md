@@ -90,6 +90,26 @@ cloud-vfs cleanup-downloads --older-than-hours 24
 - `ensure` on an **already-materialized** path is a no-op and downloads nothing
   (`local: … (already materialized — skipping fetch, no egress)`).
 
+## Concurrent `ensure` (one fetcher per path)
+
+Two jobs (or two shells) running `ensure` on the **same** path at once would otherwise both
+download the blob — duplicate egress cost, and a race on the final destination.
+
+Since **0.5.9**, `ensure` takes a per-path advisory file lock under `.cloud-vfs/locks/` for the
+duration of a fetch:
+
+| Situation | Behavior |
+|-----------|----------|
+| Two `ensure` on the same path | At most **one** downloads; the other prints `another process is fetching … — waiting`, then re-checks |
+| Second waiter, after the first finishes | Sees the now-materialized file and **skips** the fetch (`materialized by concurrent ensure — skipping fetch, no egress`) |
+| Already local before `ensure` | No download, no lock contention (`already materialized`) |
+| Final destination | Single fetch writes to scratch then `replace()`s atomically — no torn/partial file regardless of which process wins |
+
+The lock is **advisory** and **per project path** (hashed under `.cloud-vfs/locks/`); different paths
+never block each other. On platforms without `fcntl` the lock degrades to a no-op (single-fetcher
+discipline still recommended). Different paths from `offload` are coordinated separately — this lock
+covers `ensure` (fetch) races, which is where duplicate egress shows up.
+
 ## Commands
 
 ```bash

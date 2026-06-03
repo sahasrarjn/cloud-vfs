@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.9
+
+### Cross-process lock for `ensure` ([#22](https://github.com/sahasrarjn/cloud-vfs/issues/22))
+
+- **Per-path advisory lock** — `ensure` takes an `fcntl` file lock under `.cloud-vfs/locks/` while a fetch is in flight; a second process on the same path waits instead of launching a duplicate download
+- **Skip-after-wait** — once the lock is acquired, `ensure` re-checks local state and skips the fetch when a concurrent run already materialized the file (`skipping fetch, no egress`)
+- **No torn files** — fetch still writes to scratch and `replace()`s atomically, so whichever process wins leaves a complete file
+- Degrades to a no-op on platforms without `fcntl`; docs in `ROBUSTNESS.md`
+
 ## 0.5.8
 
 ### Download temp hygiene + egress guardrails ([#21](https://github.com/sahasrarjn/cloud-vfs/issues/21))
