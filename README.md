@@ -6,6 +6,8 @@ Manual **cloud blob virtual filesystem** for repos with large artifacts. Keep pr
 
 Works with **Cursor / Claude agents** or plain shell + [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) / [AWS CLI](https://aws.amazon.com/cli/).
 
+[![PyPI](https://img.shields.io/pypi/v/cloud-vfs.svg)](https://pypi.org/project/cloud-vfs/)
+[![Python versions](https://img.shields.io/pypi/pyversions/cloud-vfs.svg)](https://pypi.org/project/cloud-vfs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ## Why cloud-vfs (not DVC / Git LFS)
