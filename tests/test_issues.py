@@ -708,5 +708,59 @@ class Issue17And19Tests(unittest.TestCase):
         self.assertIn("azcopy not found", warning)
 
 
+class OffloadAlwaysPrefixTests(unittest.TestCase):
+    BASE = {
+        "version": 1,
+        "min_size_bytes": 52_428_800,
+        "include_prefixes": ["data/"],
+        "exclude_prefixes": ["infra/"],
+    }
+
+    def _policy(self, **over):
+        p = dict(self.BASE)
+        p.update(over)
+        return p
+
+    def test_small_file_under_always_prefix_is_indexed(self) -> None:
+        from cloud_vfs.storage.inventory import should_index
+        policy = self._policy(offload_always_prefixes=["data/ADME/seq_emb_"])
+        self.assertTrue(should_index("data/ADME/seq_emb_dict_x.npy", 1024, policy))
+
+    def test_small_file_outside_always_prefix_is_skipped(self) -> None:
+        from cloud_vfs.storage.inventory import should_index
+        policy = self._policy(offload_always_prefixes=["data/ADME/seq_emb_"])
+        self.assertFalse(should_index("data/other/tiny.csv", 1024, policy))
+
+    def test_exclude_beats_always_prefix(self) -> None:
+        from cloud_vfs.storage.inventory import should_index
+        policy = self._policy(
+            include_prefixes=["data/", "infra/"],
+            offload_always_prefixes=["infra/logs/"],
+        )
+        self.assertFalse(should_index("infra/logs/run.json", 1024, policy))
+
+    def test_always_prefix_beats_prefix_min_size(self) -> None:
+        from cloud_vfs.storage.inventory import min_size_for
+        policy = self._policy(
+            prefix_min_size_bytes={"data/ADME/": 10_485_760},
+            offload_always_prefixes=["data/ADME/"],
+        )
+        self.assertEqual(min_size_for("data/ADME/seq.npy", policy), 0)
+
+    def test_literal_prefix_matches_partial_segment(self) -> None:
+        from cloud_vfs.storage.inventory import min_size_for
+        # A literal (non-directory) prefix matches by raw startswith, including
+        # across a partial path segment — this is the intended issue #27 behavior.
+        policy = self._policy(offload_always_prefixes=["data/ADME/seq_emb_"])
+        self.assertEqual(min_size_for("data/ADME/seq_emb_dict_x.npy", policy), 0)
+        self.assertNotEqual(min_size_for("data/ADME/other.npy", policy), 0)
+
+    def test_default_policy_unchanged_without_key(self) -> None:
+        from cloud_vfs.storage.inventory import should_index
+        policy = self._policy()
+        self.assertFalse(should_index("data/x/tiny.csv", 1024, policy))
+        self.assertTrue(should_index("data/x/big.npy", 60_000_000, policy))
+
+
 if __name__ == "__main__":
     unittest.main()

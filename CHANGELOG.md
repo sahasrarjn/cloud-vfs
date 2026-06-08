@@ -8,6 +8,7 @@
 - **Skip-after-wait** — once the lock is acquired, `ensure` re-checks local state and skips the fetch when a concurrent run already materialized the file (`skipping fetch, no egress`)
 - **No torn files** — fetch still writes to scratch and `replace()`s atomically, so whichever process wins leaves a complete file
 - Degrades to a no-op on platforms without `fcntl`; docs in `ROBUSTNESS.md`
+- `offload_always_prefixes` policy key: offload entire trees of small files regardless of `min_size_bytes` ([#27](https://github.com/sahasrarjn/cloud-vfs/issues/27)).
 
 ## 0.5.8
 

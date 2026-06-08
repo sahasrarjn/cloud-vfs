@@ -22,6 +22,7 @@ DEFAULT_POLICY: dict[str, Any] = {
     "index_dir": ".cloud-vfs/index",
     "min_size_bytes": 52_428_800,
     "prefix_min_size_bytes": {},
+    "offload_always_prefixes": [],
     "include_prefixes": ["data/"],
     "exclude_prefixes": ["code/", "experiments/", "scratch/", ".cursor/", "infra/"],
     "committed_prefixes": [],
@@ -67,6 +68,10 @@ def in_scope(rel: str, policy: dict[str, Any]) -> bool:
 
 def min_size_for(rel: str, policy: dict[str, Any]) -> int:
     rel = normalize_rel(rel)
+    for prefix in policy.get("offload_always_prefixes") or []:
+        # _prefix_matches = directory boundary; startswith = literal filename prefix (e.g. "data/ADME/seq_emb_")
+        if _prefix_matches(rel, prefix) or rel.startswith(prefix):
+            return 0
     overrides = policy.get("prefix_min_size_bytes") or {}
     best_prefix = ""
     best_size = int(policy.get("min_size_bytes", DEFAULT_POLICY["min_size_bytes"]))
