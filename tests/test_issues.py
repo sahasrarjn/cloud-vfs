@@ -747,6 +747,14 @@ class OffloadAlwaysPrefixTests(unittest.TestCase):
         )
         self.assertEqual(min_size_for("data/ADME/seq.npy", policy), 0)
 
+    def test_literal_prefix_matches_partial_segment(self) -> None:
+        from cloud_vfs.storage.inventory import min_size_for
+        # A literal (non-directory) prefix matches by raw startswith, including
+        # across a partial path segment — this is the intended issue #27 behavior.
+        policy = self._policy(offload_always_prefixes=["data/ADME/seq_emb_"])
+        self.assertEqual(min_size_for("data/ADME/seq_emb_dict_x.npy", policy), 0)
+        self.assertNotEqual(min_size_for("data/ADME/other.npy", policy), 0)
+
     def test_default_policy_unchanged_without_key(self) -> None:
         from cloud_vfs.storage.inventory import should_index
         policy = self._policy()

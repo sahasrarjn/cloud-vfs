@@ -69,6 +69,7 @@ def in_scope(rel: str, policy: dict[str, Any]) -> bool:
 def min_size_for(rel: str, policy: dict[str, Any]) -> int:
     rel = normalize_rel(rel)
     for prefix in policy.get("offload_always_prefixes") or []:
+        # _prefix_matches = directory boundary; startswith = literal filename prefix (e.g. "data/ADME/seq_emb_")
         if _prefix_matches(rel, prefix) or rel.startswith(prefix):
             return 0
     overrides = policy.get("prefix_min_size_bytes") or {}
