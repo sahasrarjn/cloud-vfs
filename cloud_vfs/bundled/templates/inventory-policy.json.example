@@ -6,6 +6,7 @@
   "prefix_min_size_bytes": {
     "data/model_weights/": 5242880
   },
+  "offload_always_prefixes": [],
   "include_prefixes": ["data/"],
   "exclude_prefixes": ["code/", "experiments/", "scratch/", ".cursor/", "infra/"],
   "committed_prefixes": [],

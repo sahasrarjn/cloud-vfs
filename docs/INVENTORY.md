@@ -15,6 +15,7 @@ cloud-vfs maintains a **machine-written catalog** of large data files. Git track
     "data/model_weights/": 5242880,
     "data/embeddings/": 10485760
   },
+  "offload_always_prefixes": ["data/ADME/seq_emb_dict_processed_ADME_full_"],
   "include_prefixes": ["data/"],
   "exclude_prefixes": ["code/", "experiments/", "scratch/", ".cursor/", "infra/"],
   "committed_prefixes": ["data/benchmarks/"],
@@ -26,6 +27,7 @@ cloud-vfs maintains a **machine-written catalog** of large data files. Git track
 |-------|---------|
 | `min_size_bytes` | Default minimum file size to index (50 MB) |
 | `prefix_min_size_bytes` | Longest-prefix wins (e.g. 5 MB for weights) |
+| `offload_always_prefixes` | Index/offload these trees regardless of size (bypasses `min_size_bytes`; matches literal path prefixes; `exclude_prefixes` still wins) |
 | `include_prefixes` | Only index under these roots |
 | `exclude_prefixes` | Never index (code, scratch experiments, …) |
 | `committed_prefixes` | Shards to commit for reproducibility |
