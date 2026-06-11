@@ -31,6 +31,7 @@ from cloud_vfs.storage.inventory import (
     find_row,
     hash_paths_before_offload,
     index_offloaded_path,
+    is_excluded,
     iter_inventory_rows,
     list_orphan_blobs,
     load_policy,
@@ -443,6 +444,7 @@ def cmd_local_release(
     *,
     archive_override: str | None,
     dry_run: bool = False,
+    force_excluded: bool = False,
 ) -> int:
     """Delete local bytes when remote blob already exists (idempotent offload)."""
     if not paths:
@@ -456,6 +458,7 @@ def cmd_local_release(
         verify_only=False,
         no_resume=False,
         release_only=True,
+        force_excluded=force_excluded,
     )
 
 
@@ -654,7 +657,8 @@ def cmd_status(*, path: str | None, as_json: bool, drift: bool) -> int:
     return 0
 
 
-def offload_candidates(manifest: dict[str, Any]) -> list[str]:
+def offload_candidates(manifest: dict[str, Any], policy: dict[str, Any] | None = None) -> list[str]:
+    policy = policy or load_policy()
     raw: list[str] = []
     partial_roots = {
         normalize_rel(e.get("local", ""))
@@ -666,6 +670,8 @@ def offload_candidates(manifest: dict[str, Any]) -> list[str]:
         if not rel or not is_real_local(rel):
             continue
         if rel in partial_roots:
+            continue
+        if is_excluded(rel, policy):
             continue
         raw.append(rel)
     raw.sort(key=len, reverse=True)
@@ -712,6 +718,7 @@ def cmd_offload(
     verify_only: bool = False,
     no_resume: bool = False,
     release_only: bool = False,
+    force_excluded: bool = False,
 ) -> int:
     try:
         manifest = load_manifest()
@@ -721,8 +728,32 @@ def cmd_offload(
     if verify_only and not paths:
         print("Usage: cloud-vfs offload --verify-only <paths...>", file=sys.stderr)
         return 1
+    policy = load_policy()
+    if paths and not verify_only and not force_excluded:
+        blocked = []
+        for raw in paths:
+            try:
+                rel = normalize_rel(raw)
+            except PathOutsideProjectError:
+                continue
+            if is_excluded(rel, policy):
+                blocked.append(rel)
+        if blocked:
+            print(
+                "Refusing to offload path(s) under inventory-policy exclude_prefixes:",
+                file=sys.stderr,
+            )
+            for rel in blocked:
+                print(f"  {rel}", file=sys.stderr)
+            print(
+                "Stubbing an excluded prefix (e.g. a source tree) is almost never intended.\n"
+                "Pass --force-excluded to offload anyway, or edit "
+                ".cloud-vfs/inventory-policy.json.",
+                file=sys.stderr,
+            )
+            return 1
     if not paths and not verify_only:
-        paths = offload_candidates(manifest)
+        paths = offload_candidates(manifest, policy)
         if not paths:
             print("Nothing local to offload.")
             print("  cloud-vfs scan              # find large files under data/")
@@ -1365,6 +1396,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Ignore .cloud-vfs/offload-progress/ and start from scratch",
     )
+    p_offload.add_argument(
+        "--force-excluded",
+        action="store_true",
+        help="Allow offloading explicit paths under inventory-policy exclude_prefixes",
+    )
     local_group = p_offload.add_mutually_exclusive_group()
     local_group.add_argument(
         "--delete-local",
@@ -1398,6 +1434,11 @@ def main(argv: list[str] | None = None) -> int:
         dest="source_archive",
         type=archive_cli_arg,
         help=argparse.SUPPRESS,
+    )
+    p_release.add_argument(
+        "--force-excluded",
+        action="store_true",
+        help="Allow releasing paths under inventory-policy exclude_prefixes",
     )
 
     p_cleanup = sub.add_parser(
@@ -1496,6 +1537,7 @@ def main(argv: list[str] | None = None) -> int:
             delete_local=args.delete_local,
             verify_only=args.verify_only,
             no_resume=args.no_resume,
+            force_excluded=args.force_excluded,
         )
     if args.cmd == "local-release":
         return cmd_local_release(
@@ -1504,6 +1546,7 @@ def main(argv: list[str] | None = None) -> int:
                 normalize_archive(args.source_archive) if getattr(args, "source_archive", None) else None
             ),
             dry_run=args.dry_run,
+            force_excluded=args.force_excluded,
         )
     if args.cmd == "cleanup-downloads":
         return cmd_cleanup_downloads(

@@ -9,6 +9,7 @@
 - **No torn files** — fetch still writes to scratch and `replace()`s atomically, so whichever process wins leaves a complete file
 - Degrades to a no-op on platforms without `fcntl`; docs in `ROBUSTNESS.md`
 - `offload_always_prefixes` policy key: offload entire trees of small files regardless of `min_size_bytes` ([#27](https://github.com/sahasrarjn/cloud-vfs/issues/27)).
+- Offload honors `exclude_prefixes`: bare `offload` / `offload --dry-run` no longer lists excluded prefixes (e.g. synced source trees) as candidates, and explicit paths under `exclude_prefixes` are refused unless `--force-excluded` is passed (`offload` and `local-release`) ([#31](https://github.com/sahasrarjn/cloud-vfs/issues/31)).
 
 ## 0.5.8
 

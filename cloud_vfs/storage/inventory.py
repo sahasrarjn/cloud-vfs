@@ -57,6 +57,11 @@ def _prefix_matches(rel: str, prefix: str) -> bool:
     return rel == prefix.rstrip("/") or rel.startswith(prefix)
 
 
+def is_excluded(rel: str, policy: dict[str, Any]) -> bool:
+    rel = normalize_rel(rel)
+    return any(_prefix_matches(rel, p) for p in policy.get("exclude_prefixes") or [])
+
+
 def in_scope(rel: str, policy: dict[str, Any]) -> bool:
     rel = normalize_rel(rel)
     includes = policy.get("include_prefixes") or ["data/"]
