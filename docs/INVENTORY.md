@@ -29,7 +29,7 @@ cloud-vfs maintains a **machine-written catalog** of large data files. Git track
 | `prefix_min_size_bytes` | Longest-prefix wins (e.g. 5 MB for weights) |
 | `offload_always_prefixes` | Index/offload these trees regardless of size (bypasses `min_size_bytes`; matches literal path prefixes; `exclude_prefixes` still wins) |
 | `include_prefixes` | Only index under these roots |
-| `exclude_prefixes` | Never index (code, scratch experiments, …) |
+| `exclude_prefixes` | Never index (code, scratch experiments, …); never an offload candidate — bare `offload` skips these, explicit paths under them are refused unless `--force-excluded` |
 | `committed_prefixes` | Shards to commit for reproducibility |
 | `ephemeral_prefixes` | Shards to gitignore; rebuild from blob |
 

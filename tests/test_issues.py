@@ -762,5 +762,122 @@ class OffloadAlwaysPrefixTests(unittest.TestCase):
         self.assertTrue(should_index("data/x/big.npy", 60_000_000, policy))
 
 
+class OffloadExcludePrefixTests(unittest.TestCase):
+    """Issue #31 — offload must honor inventory-policy exclude_prefixes."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmpdir.name)
+        cfg = self.root / ".cloud-vfs"
+        cfg.mkdir()
+        (cfg / "index").mkdir()
+        (cfg / "config.env").write_text("LOCAL_PROVIDER=aws\nAWS_LOCAL_BUCKET=test-bucket\n")
+        (cfg / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "version": 3,
+                    "local_archive": {"provider": "aws", "bucket": "test-bucket"},
+                    "entries": [
+                        {
+                            "id": "src-tree",
+                            "local": "src/",
+                            "blob_prefix": "src/",
+                            "archive": "local_archive",
+                            "status": "synced",
+                        },
+                        {
+                            "id": "big-data",
+                            "local": "data/big",
+                            "blob_prefix": "data/big/",
+                            "archive": "local_archive",
+                            "status": "synced",
+                        },
+                    ],
+                }
+            )
+            + "\n"
+        )
+        (cfg / "inventory-policy.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "index_dir": ".cloud-vfs/index",
+                    "min_size_bytes": 1,
+                    "include_prefixes": ["data/"],
+                    "exclude_prefixes": ["src/"],
+                }
+            )
+            + "\n"
+        )
+        (self.root / "src").mkdir()
+        (self.root / "src" / "main.py").write_text("print('hello')\n")
+        (self.root / "data" / "big").mkdir(parents=True)
+        (self.root / "data" / "big" / "blob.bin").write_bytes(b"\x00" * 256)
+        self._prev = os.environ.get("CLOUD_VFS_PROJECT_ROOT")
+        os.environ["CLOUD_VFS_PROJECT_ROOT"] = str(self.root)
+        project_root.cache_clear()
+
+    def tearDown(self) -> None:
+        if self._prev is None:
+            os.environ.pop("CLOUD_VFS_PROJECT_ROOT", None)
+        else:
+            os.environ["CLOUD_VFS_PROJECT_ROOT"] = self._prev
+        project_root.cache_clear()
+        self._tmpdir.cleanup()
+
+    def test_candidates_skip_excluded_prefixes(self) -> None:
+        from cloud_vfs.cli import offload_candidates
+
+        candidates = offload_candidates(load_manifest())
+        self.assertEqual(candidates, ["data/big"])
+
+    def test_bare_dry_run_omits_excluded_synced_tree(self) -> None:
+        buf = io.StringIO()
+        with patch("cloud_vfs.cli.blob_matches_local_size", return_value=False):
+            with redirect_stdout(buf):
+                rc = cmd_offload([], dry_run=True, archive_override=None, delete_local=True)
+        out = buf.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("data/big", out)
+        self.assertNotIn("would offload: src", out)
+
+    def test_explicit_excluded_path_refused(self) -> None:
+        with patch("cloud_vfs.cli.upload_path") as mock_upload:
+            rc = cmd_offload(["src"], dry_run=False, archive_override=None, delete_local=True)
+        self.assertEqual(rc, 1)
+        mock_upload.assert_not_called()
+        self.assertTrue((self.root / "src" / "main.py").is_file())
+
+    def test_explicit_excluded_path_dry_run_also_refused(self) -> None:
+        rc = cmd_offload(["src"], dry_run=True, archive_override=None, delete_local=True)
+        self.assertEqual(rc, 1)
+
+    def test_force_excluded_allows_explicit_offload(self) -> None:
+        rel = "src/main.py"
+        with patch("cloud_vfs.cli.blob_matches_local_size", return_value=False):
+            with patch("cloud_vfs.cli.upload_path", return_value=rel):
+                rc = cmd_offload(
+                    [rel],
+                    dry_run=False,
+                    archive_override=None,
+                    delete_local=True,
+                    force_excluded=True,
+                )
+        self.assertEqual(rc, 0)
+        self.assertFalse(is_real_local(rel))
+
+    def test_verify_only_not_blocked_by_exclude(self) -> None:
+        with patch("cloud_vfs.cli.verify_offload", return_value={"path": "src", "ok": [], "missing": [], "mismatched": []}):
+            with patch("cloud_vfs.cli.format_verify_report", return_value="ok"):
+                rc = cmd_offload(
+                    ["src"],
+                    dry_run=False,
+                    archive_override=None,
+                    delete_local=True,
+                    verify_only=True,
+                )
+        self.assertEqual(rc, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
