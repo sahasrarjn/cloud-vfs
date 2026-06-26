@@ -866,6 +866,22 @@ class OffloadExcludePrefixTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertFalse(is_real_local(rel))
 
+    def test_force_excluded_allows_explicit_dir_offload(self) -> None:
+        # Regression: min_size expansion must not turn a forced excluded *directory*
+        # into a silent no-op (its files are out of scope, so none "qualify").
+        with patch("cloud_vfs.cli.blob_matches_local_size", return_value=False):
+            with patch("cloud_vfs.cli.upload_path", return_value="src/") as mock_upload:
+                rc = cmd_offload(
+                    ["src"],
+                    dry_run=False,
+                    archive_override=None,
+                    delete_local=True,
+                    force_excluded=True,
+                )
+        self.assertEqual(rc, 0)
+        mock_upload.assert_called()
+        self.assertFalse(is_real_local("src"))
+
     def test_verify_only_not_blocked_by_exclude(self) -> None:
         with patch("cloud_vfs.cli.verify_offload", return_value={"path": "src", "ok": [], "missing": [], "mismatched": []}):
             with patch("cloud_vfs.cli.format_verify_report", return_value="ok"):
@@ -877,6 +893,239 @@ class OffloadExcludePrefixTests(unittest.TestCase):
                     verify_only=True,
                 )
         self.assertEqual(rc, 0)
+
+
+class Issue33Tests(unittest.TestCase):
+    """Issue #33 — offload must honor min_size at directory granularity.
+
+    A sub-threshold file living next to a large file in an offloaded directory must
+    NOT be uploaded or removed locally.
+    """
+
+    MIN_SIZE = 1024
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmpdir.name)
+        cfg = self.root / ".cloud-vfs"
+        cfg.mkdir()
+        (cfg / "index").mkdir()
+        (cfg / "config.env").write_text("LOCAL_PROVIDER=aws\nAWS_LOCAL_BUCKET=test-bucket\n")
+        (cfg / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "version": 3,
+                    "local_archive": {"provider": "aws", "bucket": "test-bucket"},
+                    "entries": [],
+                }
+            )
+            + "\n"
+        )
+        self._write_policy()
+        self._prev = os.environ.get("CLOUD_VFS_PROJECT_ROOT")
+        os.environ["CLOUD_VFS_PROJECT_ROOT"] = str(self.root)
+        project_root.cache_clear()
+
+    def _write_policy(self, **over) -> None:
+        policy = {
+            "version": 1,
+            "index_dir": ".cloud-vfs/index",
+            "min_size_bytes": self.MIN_SIZE,
+            "include_prefixes": ["data/"],
+            "exclude_prefixes": [],
+        }
+        policy.update(over)
+        (self.root / ".cloud-vfs" / "inventory-policy.json").write_text(
+            json.dumps(policy) + "\n"
+        )
+
+    def tearDown(self) -> None:
+        if self._prev is None:
+            os.environ.pop("CLOUD_VFS_PROJECT_ROOT", None)
+        else:
+            os.environ["CLOUD_VFS_PROJECT_ROOT"] = self._prev
+        project_root.cache_clear()
+        self._tmpdir.cleanup()
+
+    def _make(self, rel: str, payload: bytes) -> Path:
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        return path
+
+    def test_mixed_dir_keeps_subthreshold_file(self) -> None:
+        self._make("data/foo/big.bin", b"\x00" * (self.MIN_SIZE * 4))
+        small_payload = b"keep me"
+        small = self._make("data/foo/small.txt", small_payload)
+
+        with patch("cloud_vfs.cli.upload_path", side_effect=lambda r, *a, **k: r):
+            rc = cmd_offload(["data/foo"], dry_run=False, archive_override=None, delete_local=True)
+
+        self.assertEqual(rc, 0)
+        # big.bin offloaded (inline ref, no real bytes); small.txt untouched
+        self.assertTrue(is_ref("data/foo/big.bin"))
+        self.assertFalse(is_real_local("data/foo/big.bin"))
+        self.assertTrue(is_real_local("data/foo/small.txt"))
+        self.assertEqual(small.read_bytes(), small_payload)
+        # inventory tracks big, not small
+        self.assertIsNotNone(find_row("data/foo/big.bin", load_policy()))
+        self.assertIsNone(find_row("data/foo/small.txt", load_policy()))
+
+    def test_all_qualifying_dir_uses_dir_stub(self) -> None:
+        from cloud_vfs.storage.stub import read_stub
+
+        self._make("data/all/a.bin", b"\x00" * (self.MIN_SIZE * 2))
+        self._make("data/all/b.bin", b"\x00" * (self.MIN_SIZE * 3))
+
+        with patch("cloud_vfs.cli.upload_path", side_effect=lambda r, *a, **k: r):
+            rc = cmd_offload(["data/all"], dry_run=False, archive_override=None, delete_local=True)
+
+        self.assertEqual(rc, 0)
+        self.assertIsNotNone(read_stub("data/all"))
+        self.assertFalse(is_real_local("data/all"))
+
+    def test_dir_with_no_qualifying_files_is_noop(self) -> None:
+        a = self._make("data/tiny/a.txt", b"a")
+        b = self._make("data/tiny/b.txt", b"b")
+
+        with patch("cloud_vfs.cli.upload_path") as mock_upload:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = cmd_offload(
+                    ["data/tiny"], dry_run=False, archive_override=None, delete_local=True
+                )
+
+        self.assertEqual(rc, 0)
+        mock_upload.assert_not_called()
+        self.assertTrue(is_real_local("data/tiny/a.txt"))
+        self.assertTrue(is_real_local("data/tiny/b.txt"))
+        self.assertEqual(a.read_bytes(), b"a")
+        self.assertEqual(b.read_bytes(), b"b")
+
+    def test_explicit_small_file_is_offloaded_and_indexed(self) -> None:
+        self._make("data/foo/small.txt", b"tiny")
+
+        with patch("cloud_vfs.cli.upload_path", side_effect=lambda r, *a, **k: r):
+            rc = cmd_offload(
+                ["data/foo/small.txt"], dry_run=False, archive_override=None, delete_local=True
+            )
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(is_ref("data/foo/small.txt"))
+        self.assertIsNotNone(find_row("data/foo/small.txt", load_policy()))
+
+    def test_always_prefix_offloads_small_files(self) -> None:
+        self._write_policy(offload_always_prefixes=["data/foo/"])
+        self._make("data/foo/big.bin", b"\x00" * (self.MIN_SIZE * 2))
+        self._make("data/foo/small.txt", b"tiny")
+
+        with patch("cloud_vfs.cli.upload_path", side_effect=lambda r, *a, **k: r):
+            rc = cmd_offload(["data/foo"], dry_run=False, archive_override=None, delete_local=True)
+
+        self.assertEqual(rc, 0)
+        self.assertFalse(is_real_local("data/foo/small.txt"))
+        self.assertIsNotNone(find_row("data/foo/small.txt", load_policy()))
+
+    def test_out_of_scope_dir_offloads_wholesale(self) -> None:
+        # A directory outside include_prefixes is not governed by min_size; an
+        # explicit offload must still upload it wholesale, not silently no-op.
+        from cloud_vfs.storage.stub import read_stub
+
+        self._make("models/foo/weights.bin", b"tiny")  # small AND out of scope
+
+        with patch("cloud_vfs.cli.upload_path", side_effect=lambda r, *a, **k: r) as mock_upload:
+            rc = cmd_offload(["models/foo"], dry_run=False, archive_override=None, delete_local=True)
+
+        self.assertEqual(rc, 0)
+        mock_upload.assert_called()
+        self.assertIsNotNone(read_stub("models/foo"))
+        self.assertFalse(is_real_local("models/foo"))
+
+    def test_explicit_small_file_survives_prune(self) -> None:
+        from cloud_vfs.storage.inventory import prune_inventory
+
+        self._make("data/foo/small.txt", b"tiny")
+        with patch("cloud_vfs.cli.upload_path", side_effect=lambda r, *a, **k: r):
+            cmd_offload(
+                ["data/foo/small.txt"], dry_run=False, archive_override=None, delete_local=True
+            )
+
+        self.assertIsNotNone(find_row("data/foo/small.txt", load_policy()))
+        prune_inventory()  # must not orphan the offloaded blob from the inventory
+        self.assertIsNotNone(find_row("data/foo/small.txt", load_policy()))
+
+
+class Issue34Tests(unittest.TestCase):
+    """Issue #34 — doctor warns when config.env disagrees with manifest.json."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmpdir.name)
+        cfg = self.root / ".cloud-vfs"
+        cfg.mkdir()
+        (cfg / "index").mkdir()
+        (cfg / "inventory-policy.json").write_text(
+            json.dumps({"version": 1, "index_dir": ".cloud-vfs/index"}) + "\n"
+        )
+        self._prev = os.environ.get("CLOUD_VFS_PROJECT_ROOT")
+        os.environ["CLOUD_VFS_PROJECT_ROOT"] = str(self.root)
+        project_root.cache_clear()
+
+    def tearDown(self) -> None:
+        if self._prev is None:
+            os.environ.pop("CLOUD_VFS_PROJECT_ROOT", None)
+        else:
+            os.environ["CLOUD_VFS_PROJECT_ROOT"] = self._prev
+        project_root.cache_clear()
+        self._tmpdir.cleanup()
+
+    def _write(self, config_env: str, manifest_local: dict) -> None:
+        cfg = self.root / ".cloud-vfs"
+        (cfg / "config.env").write_text(config_env)
+        (cfg / "manifest.json").write_text(
+            json.dumps({"version": 3, "local_archive": manifest_local, "entries": []}) + "\n"
+        )
+
+    def _source_check(self):
+        from cloud_vfs.doctor import run_checks
+
+        results = run_checks()
+        return next((r for r in results if r.name == "config-source"), None)
+
+    def test_warns_when_config_disagrees_with_manifest(self) -> None:
+        # config.env says aws, manifest still on the scaffolded azure placeholder
+        self._write(
+            "LOCAL_PROVIDER=aws\nAWS_LOCAL_BUCKET=my-bucket\nAWS_LOCAL_REGION=ap-south-1\n",
+            {
+                "provider": "azure",
+                "account": "YOUR_AZURE_ACCOUNT",
+                "container": "data",
+                "bucket": "your-s3-bucket-if-aws",
+                "region": "YOUR_REGION",
+            },
+        )
+        check = self._source_check()
+        self.assertIsNotNone(check)
+        self.assertEqual(check.status, "warn")
+        self.assertIn("manifest.json", check.detail)
+
+    def test_no_warn_when_consistent(self) -> None:
+        self._write(
+            "LOCAL_PROVIDER=aws\nAWS_LOCAL_BUCKET=my-bucket\n",
+            {"provider": "aws", "bucket": "my-bucket"},
+        )
+        check = self._source_check()
+        self.assertTrue(check is None or check.status == "ok")
+
+    def test_placeholder_detection(self) -> None:
+        from cloud_vfs.doctor import _is_placeholder
+
+        self.assertTrue(_is_placeholder("YOUR_AZURE_ACCOUNT"))
+        self.assertTrue(_is_placeholder("your-s3-bucket-if-aws"))
+        self.assertTrue(_is_placeholder("YOUR_REGION"))
+        self.assertFalse(_is_placeholder("my-real-bucket"))
+        self.assertFalse(_is_placeholder(""))
+        self.assertFalse(_is_placeholder(None))
 
 
 if __name__ == "__main__":

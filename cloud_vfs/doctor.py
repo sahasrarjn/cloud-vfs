@@ -125,6 +125,87 @@ def _check_archive() -> CheckResult:
         return CheckResult("local_archive", "fail", str(exc))
 
 
+# local_archive placeholders shipped by the scaffolded manifest.json template.
+_PLACEHOLDER_TOKENS = (
+    "YOUR_AZURE_ACCOUNT",
+    "your-s3-bucket-if-aws",
+    "YOUR_REGION",
+)
+
+
+def _is_placeholder(value: str | None) -> bool:
+    """True if a manifest field still holds a scaffolded template placeholder."""
+    if not value:
+        return False
+    return value in _PLACEHOLDER_TOKENS
+
+
+def _check_archive_sources() -> CheckResult | None:
+    """Warn when config.env and manifest.json disagree (issue #34).
+
+    ``resolve_archive`` reads provider/bucket/region/account from the manifest
+    ``local_archive`` block first and falls back to config.env only when the block
+    field is empty. So editing config.env alone is silently ignored whenever the
+    manifest holds a (possibly placeholder) value. Surface that mismatch.
+    """
+    try:
+        env = load_cloud_env()
+        manifest = load_manifest()
+    except (FileNotFoundError, ValueError):
+        return None
+    block = manifest.get("local_archive")
+    if not isinstance(block, dict):
+        return None
+
+    provider = str(block.get("provider") or env.get("LOCAL_PROVIDER") or "azure").lower()
+    if provider == "aws":
+        pairs = [
+            ("provider", block.get("provider"), env.get("LOCAL_PROVIDER")),
+            ("bucket", block.get("bucket"), env.get("AWS_LOCAL_BUCKET")),
+            ("region", block.get("region"), env.get("AWS_LOCAL_REGION")),
+        ]
+    else:
+        pairs = [
+            ("provider", block.get("provider"), env.get("LOCAL_PROVIDER")),
+            ("container", block.get("container"), env.get("AZ_LOCAL_CONTAINER")),
+            ("account", block.get("account"), env.get("AZ_LOCAL_STORAGE_ACCOUNT")),
+            ("region", block.get("region"), env.get("AZ_LOCAL_LOC")),
+        ]
+
+    placeholders = [name for name, mval, _ in pairs if _is_placeholder(mval)]
+    disagreements = [
+        name
+        for name, mval, env_val in pairs
+        if mval
+        and env_val
+        and not _is_placeholder(mval)
+        and str(mval).lower() != str(env_val).lower()
+    ]
+
+    if placeholders:
+        return CheckResult(
+            "config-source",
+            "warn",
+            "manifest.json local_archive still has scaffolded placeholder(s): "
+            f"{', '.join(placeholders)}. doctor/offload read provider/bucket/region "
+            "from manifest.json, so editing config.env alone has no effect — "
+            "edit .cloud-vfs/manifest.json local_archive.",
+        )
+    if disagreements:
+        return CheckResult(
+            "config-source",
+            "warn",
+            f"config.env and manifest.json disagree on: {', '.join(disagreements)}. "
+            "manifest.json wins, so the config.env value is ignored — "
+            "align .cloud-vfs/manifest.json local_archive.",
+        )
+    return CheckResult(
+        "config-source",
+        "ok",
+        "manifest.json drives local_archive (config.env consistent)",
+    )
+
+
 def _check_cli(provider: str) -> CheckResult:
     if provider == "aws":
         exe = "aws"
@@ -372,6 +453,9 @@ def run_checks(
         return results
 
     results.append(_check_archive())
+    src_check = _check_archive_sources()
+    if src_check is not None:
+        results.append(src_check)
     results.append(_check_cli(provider))
     results.append(_check_credentials(provider, env, cfg))
 
