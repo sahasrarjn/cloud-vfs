@@ -125,13 +125,11 @@ def _check_archive() -> CheckResult:
         return CheckResult("local_archive", "fail", str(exc))
 
 
+# local_archive placeholders shipped by the scaffolded manifest.json template.
 _PLACEHOLDER_TOKENS = (
     "YOUR_AZURE_ACCOUNT",
-    "YOUR_REMOTE_AZURE_ACCOUNT",
     "your-s3-bucket-if-aws",
-    "your-remote-s3-bucket-if-aws",
     "YOUR_REGION",
-    "YOUR_REMOTE_REGION",
 )
 
 
@@ -177,11 +175,11 @@ def _check_archive_sources() -> CheckResult | None:
     placeholders = [name for name, mval, _ in pairs if _is_placeholder(mval)]
     disagreements = [
         name
-        for name, mval, eval_ in pairs
+        for name, mval, env_val in pairs
         if mval
-        and eval_
+        and env_val
         and not _is_placeholder(mval)
-        and str(mval).lower() != str(eval_).lower()
+        and str(mval).lower() != str(env_val).lower()
     ]
 
     if placeholders:

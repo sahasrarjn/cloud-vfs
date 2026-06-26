@@ -353,7 +353,10 @@ def prune_inventory() -> tuple[int, int]:
     kept = 0
     for shard_root, local, row in list(iter_inventory_rows(policy)):
         size = int(row.get("size") or 0)
-        if should_index(local, size, policy):
+        # Keep already-offloaded (cloud-only) rows even if they no longer meet the
+        # threshold — they may have been offloaded explicitly by path (issue #33);
+        # pruning them would orphan the remote blob from the inventory.
+        if should_index(local, size, policy) or row.get("state") == "cloud-only":
             kept += 1
             continue
         remove_row(shard_root, local, policy)

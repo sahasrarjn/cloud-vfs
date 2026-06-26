@@ -30,6 +30,7 @@ from cloud_vfs.storage.inventory import (
     detect_drift,
     find_row,
     hash_paths_before_offload,
+    in_scope,
     index_offloaded_path,
     is_excluded,
     iter_inventory_rows,
@@ -41,6 +42,7 @@ from cloud_vfs.storage.inventory import (
     rebuild_index_from_blob,
     register_paths,
     repair_stubs,
+    should_index,
     verify_fetched_tree,
 )
 from cloud_vfs.storage.inventory import VerifyError
@@ -703,9 +705,11 @@ def _expand_offload_paths(paths: list[str], policy: dict[str, Any]) -> list[str]
     its qualifying files, so sub-threshold files are never uploaded or removed.
     Explicit file paths are kept as-is (offloading a file by name is explicit
     intent and is honored regardless of size).
-    """
-    from cloud_vfs.storage.inventory import should_index
 
+    ``min_size`` only governs files that are in the inventory scope, so a directory
+    that is out of scope (or an excluded directory reached via ``--force-excluded``)
+    is offloaded wholesale rather than filtered to nothing.
+    """
     out: list[str] = []
     for raw in paths:
         try:
@@ -716,6 +720,9 @@ def _expand_offload_paths(paths: list[str], policy: dict[str, Any]) -> list[str]
         src = abs_path(rel)
         if not (src.is_dir() and is_real_local(rel)):
             out.append(rel)
+            continue
+        if not in_scope(rel, policy):
+            out.append(rel)  # out-of-scope / forced-excluded dir — offload wholesale
             continue
         qualifying: list[str] = []
         total = 0

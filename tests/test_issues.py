@@ -866,6 +866,22 @@ class OffloadExcludePrefixTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertFalse(is_real_local(rel))
 
+    def test_force_excluded_allows_explicit_dir_offload(self) -> None:
+        # Regression: min_size expansion must not turn a forced excluded *directory*
+        # into a silent no-op (its files are out of scope, so none "qualify").
+        with patch("cloud_vfs.cli.blob_matches_local_size", return_value=False):
+            with patch("cloud_vfs.cli.upload_path", return_value="src/") as mock_upload:
+                rc = cmd_offload(
+                    ["src"],
+                    dry_run=False,
+                    archive_override=None,
+                    delete_local=True,
+                    force_excluded=True,
+                )
+        self.assertEqual(rc, 0)
+        mock_upload.assert_called()
+        self.assertFalse(is_real_local("src"))
+
     def test_verify_only_not_blocked_by_exclude(self) -> None:
         with patch("cloud_vfs.cli.verify_offload", return_value={"path": "src", "ok": [], "missing": [], "mismatched": []}):
             with patch("cloud_vfs.cli.format_verify_report", return_value="ok"):
@@ -1008,6 +1024,34 @@ class Issue33Tests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertFalse(is_real_local("data/foo/small.txt"))
+        self.assertIsNotNone(find_row("data/foo/small.txt", load_policy()))
+
+    def test_out_of_scope_dir_offloads_wholesale(self) -> None:
+        # A directory outside include_prefixes is not governed by min_size; an
+        # explicit offload must still upload it wholesale, not silently no-op.
+        from cloud_vfs.storage.stub import read_stub
+
+        self._make("models/foo/weights.bin", b"tiny")  # small AND out of scope
+
+        with patch("cloud_vfs.cli.upload_path", side_effect=lambda r, *a, **k: r) as mock_upload:
+            rc = cmd_offload(["models/foo"], dry_run=False, archive_override=None, delete_local=True)
+
+        self.assertEqual(rc, 0)
+        mock_upload.assert_called()
+        self.assertIsNotNone(read_stub("models/foo"))
+        self.assertFalse(is_real_local("models/foo"))
+
+    def test_explicit_small_file_survives_prune(self) -> None:
+        from cloud_vfs.storage.inventory import prune_inventory
+
+        self._make("data/foo/small.txt", b"tiny")
+        with patch("cloud_vfs.cli.upload_path", side_effect=lambda r, *a, **k: r):
+            cmd_offload(
+                ["data/foo/small.txt"], dry_run=False, archive_override=None, delete_local=True
+            )
+
+        self.assertIsNotNone(find_row("data/foo/small.txt", load_policy()))
+        prune_inventory()  # must not orphan the offloaded blob from the inventory
         self.assertIsNotNone(find_row("data/foo/small.txt", load_policy()))
 
 
