@@ -283,6 +283,7 @@ def index_offloaded_path(
     keep_local: bool = False,
     skip_files: set[str] | None = None,
     on_file_indexed: Callable[[str], None] | None = None,
+    force_index: bool = False,
 ) -> int:
     policy = load_policy()
     rel = normalize_rel(rel)
@@ -309,7 +310,7 @@ def index_offloaded_path(
             existing = find_row(file_rel, policy)
             if existing:
                 size = int(existing[1].get("size") or 0)
-        if not should_index(file_rel, size, policy):
+        if not force_index and not should_index(file_rel, size, policy):
             continue
         file_blob = blob or (f"{blob_prefix.rstrip('/')}/{Path(file_rel).name}" if blob_prefix else file_rel)
         shard_root = shard_root_for(file_rel, entry)

@@ -693,6 +693,50 @@ def _write_dir_stub_after_upload(rel: str, meta: dict[str, Any]) -> None:
     pending.replace(target / ".cloudstub")
 
 
+def _expand_offload_paths(paths: list[str], policy: dict[str, Any]) -> list[str]:
+    """Expand mixed directories to their qualifying files so offload honors
+    ``min_size`` at directory granularity (issue #33).
+
+    A directory whose files are all >= the threshold (or whitelisted via
+    ``offload_always_prefixes``) keeps the efficient whole-directory fast path. A
+    directory with a mix of qualifying and sub-threshold files is expanded to just
+    its qualifying files, so sub-threshold files are never uploaded or removed.
+    Explicit file paths are kept as-is (offloading a file by name is explicit
+    intent and is honored regardless of size).
+    """
+    from cloud_vfs.storage.inventory import should_index
+
+    out: list[str] = []
+    for raw in paths:
+        try:
+            rel = normalize_rel(raw)
+        except PathOutsideProjectError:
+            out.append(raw)
+            continue
+        src = abs_path(rel)
+        if not (src.is_dir() and is_real_local(rel)):
+            out.append(rel)
+            continue
+        qualifying: list[str] = []
+        total = 0
+        for file_rel, path in _iter_local_files(rel):
+            total += 1
+            if should_index(file_rel, path.stat().st_size, policy):
+                qualifying.append(file_rel)
+        if len(qualifying) == total:
+            out.append(rel)  # whole dir qualifies — keep the dir-stub fast path
+        elif qualifying:
+            out.extend(sorted(qualifying))  # mixed — offload only qualifying files
+        else:
+            print(
+                f"[cloud-vfs offload] {rel}: no files meet the offload threshold "
+                "(min_size). Offload a file by path, or add the prefix to "
+                "offload_always_prefixes in inventory-policy.json.",
+                file=sys.stderr,
+            )
+    return out
+
+
 def _offload_batch_exit(
     batch_job: dict[str, Any] | None,
     path_failures: int,
@@ -761,6 +805,11 @@ def cmd_offload(
             return 0
         if dry_run:
             print("Would offload (confirm, then run without --dry-run):")
+
+    if not verify_only:
+        paths = _expand_offload_paths(paths, policy)
+        if not paths:
+            return 0
 
     batch_job: dict[str, Any] | None = None
     if len(paths) > 1 and not dry_run and not verify_only:
@@ -1023,6 +1072,7 @@ def cmd_offload(
                         keep_local=not delete_local,
                         skip_files=indexed_files,
                         on_file_indexed=_on_indexed,
+                        force_index=True,
                     )
 
                 if delete_local and not progress.get("stubbed"):
