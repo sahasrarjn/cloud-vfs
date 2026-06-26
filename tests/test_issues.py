@@ -1011,5 +1011,78 @@ class Issue33Tests(unittest.TestCase):
         self.assertIsNotNone(find_row("data/foo/small.txt", load_policy()))
 
 
+class Issue34Tests(unittest.TestCase):
+    """Issue #34 — doctor warns when config.env disagrees with manifest.json."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmpdir.name)
+        cfg = self.root / ".cloud-vfs"
+        cfg.mkdir()
+        (cfg / "index").mkdir()
+        (cfg / "inventory-policy.json").write_text(
+            json.dumps({"version": 1, "index_dir": ".cloud-vfs/index"}) + "\n"
+        )
+        self._prev = os.environ.get("CLOUD_VFS_PROJECT_ROOT")
+        os.environ["CLOUD_VFS_PROJECT_ROOT"] = str(self.root)
+        project_root.cache_clear()
+
+    def tearDown(self) -> None:
+        if self._prev is None:
+            os.environ.pop("CLOUD_VFS_PROJECT_ROOT", None)
+        else:
+            os.environ["CLOUD_VFS_PROJECT_ROOT"] = self._prev
+        project_root.cache_clear()
+        self._tmpdir.cleanup()
+
+    def _write(self, config_env: str, manifest_local: dict) -> None:
+        cfg = self.root / ".cloud-vfs"
+        (cfg / "config.env").write_text(config_env)
+        (cfg / "manifest.json").write_text(
+            json.dumps({"version": 3, "local_archive": manifest_local, "entries": []}) + "\n"
+        )
+
+    def _source_check(self):
+        from cloud_vfs.doctor import run_checks
+
+        results = run_checks()
+        return next((r for r in results if r.name == "config-source"), None)
+
+    def test_warns_when_config_disagrees_with_manifest(self) -> None:
+        # config.env says aws, manifest still on the scaffolded azure placeholder
+        self._write(
+            "LOCAL_PROVIDER=aws\nAWS_LOCAL_BUCKET=my-bucket\nAWS_LOCAL_REGION=ap-south-1\n",
+            {
+                "provider": "azure",
+                "account": "YOUR_AZURE_ACCOUNT",
+                "container": "data",
+                "bucket": "your-s3-bucket-if-aws",
+                "region": "YOUR_REGION",
+            },
+        )
+        check = self._source_check()
+        self.assertIsNotNone(check)
+        self.assertEqual(check.status, "warn")
+        self.assertIn("manifest.json", check.detail)
+
+    def test_no_warn_when_consistent(self) -> None:
+        self._write(
+            "LOCAL_PROVIDER=aws\nAWS_LOCAL_BUCKET=my-bucket\n",
+            {"provider": "aws", "bucket": "my-bucket"},
+        )
+        check = self._source_check()
+        self.assertTrue(check is None or check.status == "ok")
+
+    def test_placeholder_detection(self) -> None:
+        from cloud_vfs.doctor import _is_placeholder
+
+        self.assertTrue(_is_placeholder("YOUR_AZURE_ACCOUNT"))
+        self.assertTrue(_is_placeholder("your-s3-bucket-if-aws"))
+        self.assertTrue(_is_placeholder("YOUR_REGION"))
+        self.assertFalse(_is_placeholder("my-real-bucket"))
+        self.assertFalse(_is_placeholder(""))
+        self.assertFalse(_is_placeholder(None))
+
+
 if __name__ == "__main__":
     unittest.main()
