@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from cloud_vfs import __version__
+from cloud_vfs.update_check import maybe_notify_update
 from cloud_vfs.project import fetch_cmd, manifest_path, project_root, temp_dir
 from cloud_vfs.doctor import cmd_doctor
 from cloud_vfs.guard import assess_delete_safety, cmd_guard
@@ -1321,7 +1322,7 @@ def cmd_materialize_stubs() -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def _dispatch(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="cloud-vfs",
         description="Manual cloud blob virtual filesystem",
@@ -1695,3 +1696,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "doctor":
         return cmd_doctor(as_json=args.json, probe=args.probe, roundtrip=args.roundtrip)
     return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    rc = _dispatch(argv)
+    # Non-blocking 'update available' nudge; never affects the command outcome.
+    try:
+        maybe_notify_update(__version__)
+    except Exception:
+        pass
+    return rc
