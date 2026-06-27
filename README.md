@@ -177,6 +177,14 @@ Never hand-edit `.cloud-vfs/index/*.json`.
 | `CLOUD_VFS_CONFIG` | Path to `config.env` |
 | `CLOUD_VFS_SECRETS` | Path to `secrets.env` |
 | `CLOUD_VFS_MANIFEST` | Path to `manifest.json` |
+| `CLOUD_VFS_NO_UPDATE_CHECK` | Disable the "update available" notice |
+
+### Update notice
+
+cloud-vfs prints a one-line, non-blocking reminder to **stderr** when a newer
+release is on PyPI (checked at most once a day, cached under
+`~/.cache/cloud-vfs/`). It never installs anything. It stays silent in CI, when
+output is piped, and when `CLOUD_VFS_NO_UPDATE_CHECK=1` is set.
 
 ## Documentation
 
