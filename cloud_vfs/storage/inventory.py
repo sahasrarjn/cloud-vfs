@@ -7,14 +7,19 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from cloud_vfs.project import inventory_policy_path, project_root
-from cloud_vfs.storage.backends import blob_content_length, list_blob_keys
+from cloud_vfs.storage.backends import (
+    BLOB_ABSENT,
+    BLOB_UNVERIFIABLE,
+    list_blob_keys,
+    probe_remote_blob,
+)
 from cloud_vfs.storage.config import ArchiveConfig, resolve_archive
 from cloud_vfs.storage.env import load_cloud_env, normalize_archive
 from cloud_vfs.storage.fetch import manifest_with_provider
 from cloud_vfs.storage.io_util import atomic_write_json
 from cloud_vfs.storage.manifest import find_entry, load_manifest
 from cloud_vfs.storage.paths import STUB_NAME, abs_path, is_real_local, normalize_rel
-from cloud_vfs.storage.errors import CloudVfsError
+from cloud_vfs.storage.errors import CloudStorageError, CloudVfsError
 from cloud_vfs.storage.stub import STUB_TYPE_DIR, is_ref, read_stub, stub_placement, write_stub
 
 DEFAULT_POLICY: dict[str, Any] = {
@@ -504,12 +509,22 @@ def detect_drift(*, check_blob: bool = False, verify_blobs: bool = False) -> lis
                     continue
                 blob = row.get("blob")
                 if blob:
-                    remote_size = _remote_blob_size(cfg, blob)
-                    if remote_size is None:
+                    blob_state, remote_size, detail = probe_remote_blob(cfg, blob)
+                    if blob_state == BLOB_ABSENT:
                         issues.append({"type": "ghost-index", "path": local, "blob": blob})
+                    elif blob_state == BLOB_UNVERIFIABLE:
+                        # Could not confirm existence (creds/network) — surface it
+                        # as its own state rather than a false "missing".
+                        issues.append(
+                            {"type": "blob-unverifiable", "path": local, "blob": blob, "reason": detail}
+                        )
                     else:
                         expected = row.get("size")
-                        if isinstance(expected, int) and remote_size != expected:
+                        if (
+                            isinstance(expected, int)
+                            and remote_size is not None
+                            and remote_size != expected
+                        ):
                             issues.append(
                                 {
                                     "type": "blob-size-mismatch",
@@ -519,8 +534,23 @@ def detect_drift(*, check_blob: bool = False, verify_blobs: bool = False) -> lis
                                     "remote_size": remote_size,
                                 }
                             )
-                elif row.get("blob_prefix") and not list_blob_keys(cfg, row["blob_prefix"]):
-                    issues.append({"type": "ghost-index", "path": local, "blob_prefix": row["blob_prefix"]})
+                elif row.get("blob_prefix"):
+                    try:
+                        keys = list_blob_keys(cfg, row["blob_prefix"])
+                    except CloudStorageError as exc:
+                        issues.append(
+                            {
+                                "type": "blob-unverifiable",
+                                "path": local,
+                                "blob_prefix": row["blob_prefix"],
+                                "reason": str(exc),
+                            }
+                        )
+                    else:
+                        if not keys:
+                            issues.append(
+                                {"type": "ghost-index", "path": local, "blob_prefix": row["blob_prefix"]}
+                            )
         elif state == "local":
             if is_ref(local):
                 issues.append({"type": "stale-inline-ref", "path": local})
@@ -555,20 +585,6 @@ def _walk_scoped_files(policy: dict[str, Any]) -> Iterator[tuple[str, Path]]:
                 continue
             seen.add(rel)
             yield rel, path
-
-
-def _remote_blob_size(cfg: ArchiveConfig, blob: str) -> int | None:
-    """Authoritative existence + size check for a single blob.
-
-    Uses a HEAD (``head-object`` / blob ``show``) rather than a prefix listing
-    so a missing object is reported as missing (``None``) instead of being
-    masked by sibling keys under the same prefix.
-    """
-    return blob_content_length(cfg, blob)
-
-
-def _blob_exists(cfg: ArchiveConfig, blob: str) -> bool:
-    return _remote_blob_size(cfg, blob) is not None
 
 
 def _unregistered_cloud(

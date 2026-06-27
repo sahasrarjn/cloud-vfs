@@ -65,7 +65,7 @@ from cloud_vfs.storage.backends import (
     blob_content_length,
     blob_matches_local_size,
     choose_azure_transport,
-    list_blob_keys,
+    verify_remote_tree,
 )
 from cloud_vfs.storage.offload_job import (
     STATUS_FAILED,
@@ -771,6 +771,7 @@ def _assert_remote_before_delete(
     cfg: ArchiveConfig,
     meta: dict[str, Any],
     rel: str,
+    src: Path,
     *,
     is_dir: bool,
     local_size: int | None,
@@ -779,19 +780,14 @@ def _assert_remote_before_delete(
 
     This is the last line of defense against issue #37: even on a resumed run
     that skips the upload step (so ``upload_path``'s own verification never
-    runs), we HEAD the blob here and refuse to write the stub / delete local if
-    the object is missing or the wrong size.
+    runs), we re-verify here and refuse to write the stub / delete local if the
+    object is missing or the wrong size.
     """
     if is_dir:
         prefix = meta.get("blob_prefix") or (rel.rstrip("/") + "/")
-        if not list_blob_keys(cfg, prefix):
-            raise CloudStorageError(
-                f"verify {cfg.provider}://{cfg.bucket}/{prefix}",
-                [],
-                "refusing to delete local — no remote objects found under blob "
-                f"prefix '{prefix}' (upload appears to have produced nothing)",
-                1,
-            )
+        # Count-based check: require at least as many remote objects as local
+        # data files, so a partial (not just empty) tree upload is caught too.
+        verify_remote_tree(cfg, src, prefix)
         return
     blob = meta.get("blob") or rel
     remote_size = blob_content_length(cfg, blob)
@@ -1114,6 +1110,19 @@ def cmd_offload(
 
                 if src.is_dir():
                     meta["blob_prefix"] = entry.get("blob_prefix") or rel.rstrip("/") + "/"
+                else:
+                    meta["blob"] = entry.get("blob") or rel
+
+                # Verify the remote copy exists BEFORE flipping inventory rows to
+                # cloud-only or writing any stub (issue #37/#38). On a fresh upload
+                # or size-match resume this was already verified this run; a plain
+                # resume (progress.uploaded from a prior run) re-verifies here.
+                if delete_local and not progress.get("stubbed") and not verified_this_run:
+                    _assert_remote_before_delete(
+                        cfg, meta, rel, src, is_dir=src.is_dir(), local_size=size
+                    )
+
+                if src.is_dir():
                     index_offloaded_path(
                         rel,
                         archive=use_archive,
@@ -1127,7 +1136,6 @@ def cmd_offload(
                         on_file_indexed=_on_indexed,
                     )
                 else:
-                    meta["blob"] = entry.get("blob") or rel
                     index_offloaded_path(
                         rel,
                         archive=use_archive,
@@ -1143,10 +1151,6 @@ def cmd_offload(
                     )
 
                 if delete_local and not progress.get("stubbed"):
-                    if not verified_this_run:
-                        _assert_remote_before_delete(
-                            cfg, meta, rel, is_dir=src.is_dir(), local_size=size
-                        )
                     mark_offloaded(entry)
                     if src.is_dir():
                         _write_dir_stub_after_upload(rel, meta)

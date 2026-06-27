@@ -137,7 +137,9 @@ cloud-vfs guard data/large.npy
 | Type | Meaning |
 |------|---------|
 | `orphan-local` | Large local file, not in inventory |
-| `ghost-index` | Inventory cloud-only, blob missing |
+| `ghost-index` | Inventory cloud-only, remote blob confirmed missing (404) |
+| `blob-size-mismatch` | Remote blob exists but size ≠ inventory |
+| `blob-unverifiable` | Remote blob could not be checked (creds/network) — not necessarily missing |
 | `hash-mismatch` | Local sha256 ≠ inventory |
 | `orphan-blob` | In cloud-vfs bucket, not in inventory |
 | `stale-stub` | Cloud-only dir, no `.cloudstub` |

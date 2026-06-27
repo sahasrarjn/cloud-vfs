@@ -174,6 +174,58 @@ def _run(cmd: list[str], *, action: str, **kwargs: Any) -> subprocess.CompletedP
         raise
 
 
+# Markers that prove a HEAD/show failure is a genuine "object does not exist"
+# rather than a transport/permission error (so reconcile can tell a missing
+# blob apart from "couldn't check").
+_NOT_FOUND_MARKERS = (
+    "404",
+    "not found",
+    "nosuchkey",
+    "blobnotfound",
+    "does not exist",
+    "resourcenotfound",
+)
+
+BLOB_PRESENT = "present"
+BLOB_ABSENT = "absent"
+BLOB_UNVERIFIABLE = "unverifiable"
+
+
+def probe_remote_blob(cfg: ArchiveConfig, blob_key: str) -> tuple[str, int | None, str | None]:
+    """Classify a blob's remote state without conflating errors.
+
+    Returns ``(state, size, detail)`` where ``state`` is one of
+    ``BLOB_PRESENT`` (with size when reported), ``BLOB_ABSENT`` (a confirmed
+    404 / "does not exist"), or ``BLOB_UNVERIFIABLE`` (a transport or
+    permission error — ``detail`` carries the message). Unlike
+    :func:`blob_content_length`, a credentials/network failure is NOT reported
+    as a missing object.
+    """
+    if cfg.provider == "aws":
+        cmd = _aws_base(cfg) + ["s3api", "head-object", "--bucket", cfg.bucket, "--key", blob_key]
+        action = f"head s3://{cfg.bucket}/{blob_key}"
+        size_path: tuple[str, ...] = ("ContentLength",)
+    else:
+        cmd = [
+            "az", "storage", "blob", "show",
+            "--account-name", cfg.account or "",
+            "--account-key", cfg.key or "",
+            "--container-name", cfg.bucket,
+            "--name", blob_key,
+            "-o", "json",
+        ]
+        action = f"show azure blob {blob_key}"
+        size_path = ("properties", "contentLength")
+    try:
+        result = _run(cmd, action=action, idle_timeout_sec=120.0)
+    except CloudStorageError as exc:
+        text = (exc.stderr or "").lower()
+        if any(marker in text for marker in _NOT_FOUND_MARKERS):
+            return (BLOB_ABSENT, None, None)
+        return (BLOB_UNVERIFIABLE, None, exc.stderr or f"exit code {exc.returncode}")
+    return (BLOB_PRESENT, _parse_remote_size(result.stdout, size_path), None)
+
+
 def blob_content_length(cfg: ArchiveConfig, blob_key: str) -> int | None:
     """Return blob size in bytes, or None if the object does not exist."""
     if cfg.provider == "aws":

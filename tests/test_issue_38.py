@@ -83,7 +83,10 @@ class ReconcileBlobVerificationTests(_AwsProjectTestCase):
         self._make_cloud_only(rel)
 
         # Remote blob is absent (the silent-upload data-loss scenario).
-        with patch("cloud_vfs.storage.inventory.blob_content_length", return_value=None):
+        with patch(
+            "cloud_vfs.storage.inventory.probe_remote_blob",
+            return_value=("absent", None, None),
+        ):
             rc = cmd_reconcile(
                 as_json=False,
                 from_blob=False,
@@ -99,7 +102,10 @@ class ReconcileBlobVerificationTests(_AwsProjectTestCase):
         rel = "data/model.bin"
         self._make_cloud_only(rel)
 
-        with patch("cloud_vfs.storage.inventory.blob_content_length", return_value=None):
+        with patch(
+            "cloud_vfs.storage.inventory.probe_remote_blob",
+            return_value=("absent", None, None),
+        ):
             issues = detect_drift(verify_blobs=True)
         types = {i["type"] for i in issues}
         self.assertIn("ghost-index", types)
@@ -109,7 +115,10 @@ class ReconcileBlobVerificationTests(_AwsProjectTestCase):
         self._make_cloud_only(rel, size=1024)
 
         # Remote object exists but is truncated.
-        with patch("cloud_vfs.storage.inventory.blob_content_length", return_value=10):
+        with patch(
+            "cloud_vfs.storage.inventory.probe_remote_blob",
+            return_value=("present", 10, None),
+        ):
             issues = detect_drift(verify_blobs=True)
         types = {i["type"] for i in issues}
         self.assertIn("blob-size-mismatch", types)
@@ -118,9 +127,71 @@ class ReconcileBlobVerificationTests(_AwsProjectTestCase):
         rel = "data/model.bin"
         self._make_cloud_only(rel, size=1024)
 
-        with patch("cloud_vfs.storage.inventory.blob_content_length", return_value=1024):
+        with patch(
+            "cloud_vfs.storage.inventory.probe_remote_blob",
+            return_value=("present", 1024, None),
+        ):
             issues = detect_drift(verify_blobs=True)
         self.assertEqual(issues, [])
+
+    def test_detect_drift_distinguishes_unverifiable_from_missing(self) -> None:
+        """A creds/network failure must NOT be reported as a missing blob."""
+        rel = "data/model.bin"
+        self._make_cloud_only(rel)
+
+        with patch(
+            "cloud_vfs.storage.inventory.probe_remote_blob",
+            return_value=("unverifiable", None, "AccessDenied"),
+        ):
+            issues = detect_drift(verify_blobs=True)
+        types = {i["type"] for i in issues}
+        self.assertIn("blob-unverifiable", types)
+        self.assertNotIn("ghost-index", types)
+
+
+class ProbeRemoteBlobTests(_AwsProjectTestCase):
+    """Issue #38 — probe distinguishes a real 404 from a transport/permission error."""
+
+    def _cfg(self):
+        from cloud_vfs.storage.config import ArchiveConfig
+
+        return ArchiveConfig(name="local_archive", provider="aws", bucket="test-bucket", region="us-east-1")
+
+    def test_probe_present_returns_size(self) -> None:
+        import json as _json
+        import subprocess
+        from cloud_vfs.storage.backends import BLOB_PRESENT, probe_remote_blob
+
+        def fake_run(cmd, *, action, **kwargs):
+            return subprocess.CompletedProcess(cmd, 0, stdout=_json.dumps({"ContentLength": 123}))
+
+        with patch("cloud_vfs.storage.backends._run", side_effect=fake_run):
+            state, size, _ = probe_remote_blob(self._cfg(), "data/x.bin")
+        self.assertEqual(state, BLOB_PRESENT)
+        self.assertEqual(size, 123)
+
+    def test_probe_absent_on_404(self) -> None:
+        from cloud_vfs.storage.backends import BLOB_ABSENT, probe_remote_blob
+        from cloud_vfs.storage.errors import CloudStorageError
+
+        def fake_run(cmd, *, action, **kwargs):
+            raise CloudStorageError(action, list(cmd), "An error occurred (404) ... Not Found", 254)
+
+        with patch("cloud_vfs.storage.backends._run", side_effect=fake_run):
+            state, _, _ = probe_remote_blob(self._cfg(), "data/x.bin")
+        self.assertEqual(state, BLOB_ABSENT)
+
+    def test_probe_unverifiable_on_access_denied(self) -> None:
+        from cloud_vfs.storage.backends import BLOB_UNVERIFIABLE, probe_remote_blob
+        from cloud_vfs.storage.errors import CloudStorageError
+
+        def fake_run(cmd, *, action, **kwargs):
+            raise CloudStorageError(action, list(cmd), "An error occurred (403) ... Forbidden", 254)
+
+        with patch("cloud_vfs.storage.backends._run", side_effect=fake_run):
+            state, _, detail = probe_remote_blob(self._cfg(), "data/x.bin")
+        self.assertEqual(state, BLOB_UNVERIFIABLE)
+        self.assertIn("403", detail or "")
 
 
 class VerifyBeforeDeleteTests(_AwsProjectTestCase):
