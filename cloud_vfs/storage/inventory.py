@@ -7,14 +7,19 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from cloud_vfs.project import inventory_policy_path, project_root
-from cloud_vfs.storage.backends import list_blob_keys
+from cloud_vfs.storage.backends import (
+    BLOB_ABSENT,
+    BLOB_UNVERIFIABLE,
+    list_blob_keys,
+    probe_remote_blob,
+)
 from cloud_vfs.storage.config import ArchiveConfig, resolve_archive
 from cloud_vfs.storage.env import load_cloud_env, normalize_archive
 from cloud_vfs.storage.fetch import manifest_with_provider
 from cloud_vfs.storage.io_util import atomic_write_json
 from cloud_vfs.storage.manifest import find_entry, load_manifest
 from cloud_vfs.storage.paths import STUB_NAME, abs_path, is_real_local, normalize_rel
-from cloud_vfs.storage.errors import CloudVfsError
+from cloud_vfs.storage.errors import CloudStorageError, CloudVfsError
 from cloud_vfs.storage.stub import STUB_TYPE_DIR, is_ref, read_stub, stub_placement, write_stub
 
 DEFAULT_POLICY: dict[str, Any] = {
@@ -441,7 +446,16 @@ def repair_stubs() -> int:
     return repaired
 
 
-def detect_drift(*, check_blob: bool = False) -> list[dict[str, Any]]:
+def detect_drift(*, check_blob: bool = False, verify_blobs: bool = False) -> list[dict[str, Any]]:
+    """Audit disk vs inventory vs remote blobs.
+
+    ``verify_blobs`` HEADs each cloud-only inventory entry's blob to confirm it
+    still exists remotely (and matches the recorded size), turning a silent
+    missing-blob into reported drift instead of a false "No drift detected"
+    (issue #38). ``check_blob`` additionally performs the (more expensive)
+    reverse scan for unregistered remote blobs and implies ``verify_blobs``.
+    """
+    verify_blobs = verify_blobs or check_blob
     policy = load_policy()
     manifest = load_manifest()
     env = load_cloud_env()
@@ -484,7 +498,7 @@ def detect_drift(*, check_blob: bool = False) -> list[dict[str, Any]]:
                             "stub_blob": stub_blob,
                         }
                     )
-            if check_blob:
+            if verify_blobs:
                 archive = normalize_archive(row.get("archive", "local_archive"))
                 prov = row.get("provider") or (entry or {}).get("provider")
                 mcfg = manifest_with_provider(manifest, archive, prov)
@@ -494,8 +508,49 @@ def detect_drift(*, check_blob: bool = False) -> list[dict[str, Any]]:
                     issues.append({"type": "ghost-index", "path": local, "reason": "missing archive config"})
                     continue
                 blob = row.get("blob")
-                if blob and not _blob_exists(cfg, blob):
-                    issues.append({"type": "ghost-index", "path": local, "blob": blob})
+                if blob:
+                    blob_state, remote_size, detail = probe_remote_blob(cfg, blob)
+                    if blob_state == BLOB_ABSENT:
+                        issues.append({"type": "ghost-index", "path": local, "blob": blob})
+                    elif blob_state == BLOB_UNVERIFIABLE:
+                        # Could not confirm existence (creds/network) — surface it
+                        # as its own state rather than a false "missing".
+                        issues.append(
+                            {"type": "blob-unverifiable", "path": local, "blob": blob, "reason": detail}
+                        )
+                    else:
+                        expected = row.get("size")
+                        if (
+                            isinstance(expected, int)
+                            and remote_size is not None
+                            and remote_size != expected
+                        ):
+                            issues.append(
+                                {
+                                    "type": "blob-size-mismatch",
+                                    "path": local,
+                                    "blob": blob,
+                                    "expected_size": expected,
+                                    "remote_size": remote_size,
+                                }
+                            )
+                elif row.get("blob_prefix"):
+                    try:
+                        keys = list_blob_keys(cfg, row["blob_prefix"])
+                    except CloudStorageError as exc:
+                        issues.append(
+                            {
+                                "type": "blob-unverifiable",
+                                "path": local,
+                                "blob_prefix": row["blob_prefix"],
+                                "reason": str(exc),
+                            }
+                        )
+                    else:
+                        if not keys:
+                            issues.append(
+                                {"type": "ghost-index", "path": local, "blob_prefix": row["blob_prefix"]}
+                            )
         elif state == "local":
             if is_ref(local):
                 issues.append({"type": "stale-inline-ref", "path": local})
@@ -530,13 +585,6 @@ def _walk_scoped_files(policy: dict[str, Any]) -> Iterator[tuple[str, Path]]:
                 continue
             seen.add(rel)
             yield rel, path
-
-
-def _blob_exists(cfg: ArchiveConfig, blob: str) -> bool:
-    keys = list_blob_keys(cfg, blob.rsplit("/", 1)[0] + "/" if "/" in blob else "")
-    if blob in keys:
-        return True
-    return any(k == blob or k.endswith("/" + blob) for k in keys)
 
 
 def _unregistered_cloud(

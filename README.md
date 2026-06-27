@@ -25,8 +25,8 @@ Best for: **disk hygiene + lazy fetch + explicit offload** when projects store l
 
 - **Per-file inventory** — `.cloud-vfs/index/<shard>.json` with `local`, `blob`, `sha256`, `etag`, `state`
 - **Lazy fetch** — `cloud-vfs ensure <path>` (single file or whole tree)
-- **Manual offload** — hash before delete; `--dry-run` first
-- **Drift audit** — `cloud-vfs reconcile` compares disk ↔ inventory ↔ blob
+- **Manual offload** — hash before delete; verifies the remote object (exists + size) before removing local; `--dry-run` first
+- **Drift audit** — `cloud-vfs reconcile` compares disk ↔ inventory ↔ blob (HEADs each remote blob by default; `--no-verify-blobs` to skip)
 - **Large-data scope** — default ≥ 50 MB under `data/`; prefix overrides for weights, etc.
 - **Multi-cloud** — Azure Blob and AWS S3
 - **Cursor skill** — `cloud-vfs init --skill`
@@ -108,7 +108,7 @@ Inventory rows are created by **`offload`**, **`register`**, and **`reconcile --
 | `cloud-vfs ensure <path>` | Fetch from cloud if inline ref / stub / cloud-only |
 | `cloud-vfs resolve <path>` | JSON: blob URL + inventory row (for agents) |
 | `cloud-vfs status [--drift]` | Manifest paths + inventory counts |
-| `cloud-vfs reconcile [--from-blob] [--fix-index]` | Drift audit; rebuild index from blob |
+| `cloud-vfs reconcile [--no-verify-blobs] [--from-blob] [--fix-index]` | Drift audit (verifies remote blobs by default); rebuild index from blob |
 | `cloud-vfs prune` | Remove inventory rows below min size |
 | `cloud-vfs cleanup-downloads [--dry-run]` | Remove stale download temps from interrupted fetches |
 | `cloud-vfs offload --dry-run` | Preview offload candidates |
