@@ -84,6 +84,17 @@ class NotifyFromCacheTests(_CacheEnv):
         out = self._notify("0.6.0")
         self.assertEqual(out, "")
 
+    def test_default_stream_is_stderr_and_stdout_stays_clean(self) -> None:
+        """The notice must go to stderr only — never corrupt --json stdout."""
+        self._seed_cache("0.5.11", age_sec=0.0)
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(update_check, "_is_enabled", return_value=True):
+            with patch.object(update_check.sys, "stdout", out):
+                with patch.object(update_check.sys, "stderr", err):
+                    update_check.maybe_notify_update("0.5.10")  # no stream= arg
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("0.5.11", err.getvalue())
+
 
 class ThrottleTests(_CacheEnv):
     def test_fetches_when_cache_stale(self) -> None:

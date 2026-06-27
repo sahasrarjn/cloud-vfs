@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, TextIO
@@ -38,8 +39,13 @@ def _is_ci() -> bool:
     return bool(os.environ.get("GITHUB_ACTIONS") or os.environ.get("GITLAB_CI"))
 
 
+def _opt_out() -> bool:
+    val = os.environ.get("CLOUD_VFS_NO_UPDATE_CHECK", "").strip().lower()
+    return val not in ("", "0", "false", "no")
+
+
 def _is_enabled(stream: TextIO) -> bool:
-    if os.environ.get("CLOUD_VFS_NO_UPDATE_CHECK"):
+    if _opt_out():
         return False
     if _is_ci():
         return False
@@ -71,7 +77,10 @@ def _load_cache() -> dict[str, Any]:
 def _save_cache(data: dict[str, Any]) -> None:
     path = _cache_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data))
+    # Atomic write so concurrent CLI runs never read a half-written cache.
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data))
+    os.replace(tmp, path)
 
 
 def _parse_version(value: str) -> tuple[int, int, int] | None:
@@ -102,6 +111,28 @@ def _fetch_latest_version(timeout: float) -> str | None:
     return version if isinstance(version, str) and version else None
 
 
+def _fetch_latest_within(deadline_sec: float) -> str | None:
+    """Run the PyPI fetch but cap *total* wall time, including DNS resolution.
+
+    ``urlopen(timeout=...)`` only bounds connect/read, not ``getaddrinfo``, so a
+    broken resolver could otherwise delay process exit. We run the fetch in a
+    daemon thread and abandon it if it overruns the deadline — the command's
+    exit is never blocked for longer than ``deadline_sec``.
+    """
+    result: dict[str, str | None] = {"v": None}
+
+    def _run() -> None:
+        try:
+            result["v"] = _fetch_latest_version(deadline_sec)
+        except Exception:
+            result["v"] = None
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    worker.join(deadline_sec)
+    return result["v"]
+
+
 def _due_for_check(cache: dict[str, Any]) -> bool:
     interval = _env_float("CLOUD_VFS_UPDATE_CHECK_INTERVAL", _DEFAULT_INTERVAL_SEC)
     last = cache.get("last_check")
@@ -126,11 +157,9 @@ def maybe_notify_update(current_version: str, *, stream: TextIO | None = None) -
         cache = _load_cache()
         latest = cache.get("latest_version")
         if _due_for_check(cache):
-            fetched = None
-            try:
-                fetched = _fetch_latest_version(_env_float("CLOUD_VFS_UPDATE_TIMEOUT", _DEFAULT_TIMEOUT_SEC))
-            except Exception:
-                fetched = None
+            fetched = _fetch_latest_within(
+                _env_float("CLOUD_VFS_UPDATE_TIMEOUT", _DEFAULT_TIMEOUT_SEC)
+            )
             if fetched:
                 latest = fetched
             # Advance last_check even on failure so a persistent network problem
