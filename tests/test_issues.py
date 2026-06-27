@@ -311,6 +311,11 @@ class IssueFixTests(unittest.TestCase):
 
         def fake_run(cmd, *, action, **kwargs):
             captured.append((list(cmd), kwargs))
+            if action.startswith("list azure"):
+                # tree verification lists the prefix; report the uploaded member
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps([{"name": f"{rel}/a.csv"}])
+                )
             return subprocess.CompletedProcess(cmd, 0, stdout="")
 
         with patch("cloud_vfs.storage.backends._run", side_effect=fake_run):

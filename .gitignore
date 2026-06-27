@@ -8,3 +8,6 @@ dist/
 .env
 marketing/
 .cursor/
+
+# Claude Code local agent worktrees
+.claude/worktrees/

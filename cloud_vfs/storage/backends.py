@@ -226,6 +226,117 @@ def blob_content_length(cfg: ArchiveConfig, blob_key: str) -> int | None:
     return int(length) if length is not None else None
 
 
+def _parse_remote_size(stdout: str | None, path: tuple[str, ...]) -> int | None:
+    """Pull a nested size field out of a HEAD/show response.
+
+    Existence is proven by the command's exit code; this only extracts the size
+    for the cross-check, so a non-JSON / unexpected payload yields ``None`` (size
+    unknown) rather than failing a verification that already passed.
+    """
+    try:
+        data: Any = json.loads(stdout or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return None
+    for key in path:
+        if not isinstance(data, dict):
+            return None
+        data = data.get(key)
+    if data is None:
+        return None
+    try:
+        return int(data)
+    except (TypeError, ValueError):
+        return None
+
+
+def verify_remote_object(
+    cfg: ArchiveConfig,
+    blob_key: str,
+    *,
+    expected_size: int | None = None,
+) -> int | None:
+    """Confirm an object exists remotely (and matches ``expected_size``).
+
+    Unlike a prefix ``s3 ls`` / blob ``list``, this performs an authoritative
+    HEAD (``s3api head-object`` / ``az storage blob show``) that returns a
+    non-zero exit for a missing object. A missing object — or a size that does
+    not match the local source — raises :class:`CloudStorageError` so callers
+    NEVER delete a local file after a silent/no-op upload (issue #37).
+
+    Returns the remote size in bytes when the provider reports it.
+    """
+    if cfg.provider == "aws":
+        try:
+            result = _run(
+                _aws_base(cfg)
+                + ["s3api", "head-object", "--bucket", cfg.bucket, "--key", blob_key],
+                action=f"verify s3://{cfg.bucket}/{blob_key}",
+                idle_timeout_sec=120.0,
+            )
+        except CloudStorageError as exc:
+            raise CloudStorageError(
+                f"verify s3://{cfg.bucket}/{blob_key}",
+                [],
+                f"upload verification failed — object not found after upload "
+                f"(local file NOT deleted): {exc}",
+                exc.returncode or 1,
+            ) from exc
+        # A clean (exit 0) head-object already proves the object exists; the JSON
+        # is only consulted for the size cross-check.
+        remote_size = _parse_remote_size(result.stdout, ("ContentLength",))
+    else:
+        try:
+            result = _run(
+                [
+                    "az",
+                    "storage",
+                    "blob",
+                    "show",
+                    "--account-name",
+                    cfg.account or "",
+                    "--account-key",
+                    cfg.key or "",
+                    "--container-name",
+                    cfg.bucket,
+                    "--name",
+                    blob_key,
+                    "-o",
+                    "json",
+                ],
+                action=f"verify azure blob {blob_key}",
+                idle_timeout_sec=120.0,
+            )
+        except CloudStorageError as exc:
+            raise CloudStorageError(
+                f"verify azure blob {blob_key}",
+                [],
+                f"upload verification failed — blob not found after upload "
+                f"(local file NOT deleted): {exc}",
+                exc.returncode or 1,
+            ) from exc
+        remote_size = _parse_remote_size(result.stdout, ("properties", "contentLength"))
+
+    if remote_size is None:
+        return None
+    remote_size = int(remote_size)
+    if expected_size is not None and remote_size != expected_size:
+        raise CloudStorageError(
+            f"verify {blob_key}",
+            [],
+            f"upload verification failed — size mismatch (local file NOT deleted): "
+            f"uploaded {expected_size} bytes but remote object is {remote_size} bytes",
+            1,
+        )
+    return remote_size
+
+
+def _safe_size(path: Path) -> int | None:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
 def _azcopy_on_path() -> bool:
     return shutil.which("azcopy") is not None
 
@@ -318,6 +429,35 @@ def _first_data_file(path: Path) -> Path:
         if candidate.is_file() and candidate.name != STUB_NAME:
             return candidate
     raise ValueError(f"Cannot upload empty directory: {path}")
+
+
+def _local_data_file_count(path: Path) -> int:
+    return sum(1 for p in path.rglob("*") if p.is_file() and p.name != STUB_NAME)
+
+
+def verify_remote_tree(cfg: ArchiveConfig, src: Path, prefix: str) -> None:
+    """Confirm a directory upload actually landed every member object.
+
+    ``verify_remote_object`` only HEADs a single sample file, so a sync/batch
+    that exited 0 while uploading nothing (or only some files) could still pass.
+    This lists the destination prefix and requires at least as many remote
+    objects as local data files, catching the "uploaded nothing" case before
+    the local tree is deleted (issue #37). Extra remote objects (e.g. a prior
+    offload of the same tree) are fine — only a shortfall fails.
+    """
+    expected = _local_data_file_count(src)
+    if expected <= 0:
+        return
+    remote = len(list_blob_keys(cfg, prefix))
+    if remote < expected:
+        raise CloudStorageError(
+            f"verify {cfg.provider}://{cfg.bucket}/{prefix.rstrip('/')}/",
+            [],
+            f"tree upload verification failed (local files NOT deleted): "
+            f"expected at least {expected} object(s) under the prefix but found "
+            f"{remote} — the upload appears to be incomplete",
+            1,
+        )
 
 
 def _aws_base(cfg: ArchiveConfig) -> list[str]:
@@ -604,6 +744,8 @@ def upload_path(
                 retries=_upload_retry_attempts(),
             )
             key = f"{key_base}/{sample.relative_to(src).as_posix()}"
+            verify_size = _safe_size(sample)
+            verify_remote_tree(cfg, src, key_base)
         else:
             key = key_base if blob_prefix else rel
             uri = f"s3://{cfg.bucket}/{key}"
@@ -619,11 +761,8 @@ def upload_path(
                 stream_output=show_progress,
                 retries=_upload_retry_attempts(),
             )
-        _run(
-            _aws_base(cfg) + ["s3", "ls", f"s3://{cfg.bucket}/{key}"],
-            action=f"verify s3://{cfg.bucket}/{key}",
-            idle_timeout_sec=120.0,
-        )
+            verify_size = _safe_size(src)
+        verify_remote_object(cfg, key, expected_size=verify_size)
         return key
 
     if src.is_dir():
@@ -657,6 +796,8 @@ def upload_path(
             retries=_upload_retry_attempts(),
         )
         blob_name = f"{dest_path}/{sample.relative_to(src).as_posix()}"
+        verify_size = _safe_size(sample)
+        verify_remote_tree(cfg, src, dest_path)
     else:
         blob_name = rel
         _azure_upload_blob(
@@ -665,27 +806,9 @@ def upload_path(
             src,
             progress_label=progress_label,
         )
+        verify_size = _safe_size(src)
 
-    _run(
-        [
-            "az",
-            "storage",
-            "blob",
-            "show",
-            "--account-name",
-            cfg.account or "",
-            "--account-key",
-            cfg.key or "",
-            "--container-name",
-            cfg.bucket,
-            "--name",
-            blob_name,
-            "-o",
-            "none",
-        ],
-        action=f"verify azure blob {blob_name}",
-        idle_timeout_sec=120.0,
-    )
+    verify_remote_object(cfg, blob_name, expected_size=verify_size)
     return blob_name
 
 
