@@ -431,6 +431,35 @@ def _first_data_file(path: Path) -> Path:
     raise ValueError(f"Cannot upload empty directory: {path}")
 
 
+def _local_data_file_count(path: Path) -> int:
+    return sum(1 for p in path.rglob("*") if p.is_file() and p.name != STUB_NAME)
+
+
+def verify_remote_tree(cfg: ArchiveConfig, src: Path, prefix: str) -> None:
+    """Confirm a directory upload actually landed every member object.
+
+    ``verify_remote_object`` only HEADs a single sample file, so a sync/batch
+    that exited 0 while uploading nothing (or only some files) could still pass.
+    This lists the destination prefix and requires at least as many remote
+    objects as local data files, catching the "uploaded nothing" case before
+    the local tree is deleted (issue #37). Extra remote objects (e.g. a prior
+    offload of the same tree) are fine — only a shortfall fails.
+    """
+    expected = _local_data_file_count(src)
+    if expected <= 0:
+        return
+    remote = len(list_blob_keys(cfg, prefix))
+    if remote < expected:
+        raise CloudStorageError(
+            f"verify {cfg.provider}://{cfg.bucket}/{prefix.rstrip('/')}/",
+            [],
+            f"tree upload verification failed (local files NOT deleted): "
+            f"expected at least {expected} object(s) under the prefix but found "
+            f"{remote} — the upload appears to be incomplete",
+            1,
+        )
+
+
 def _aws_base(cfg: ArchiveConfig) -> list[str]:
     cmd = ["aws"]
     if cfg.profile:
@@ -716,6 +745,7 @@ def upload_path(
             )
             key = f"{key_base}/{sample.relative_to(src).as_posix()}"
             verify_size = _safe_size(sample)
+            verify_remote_tree(cfg, src, key_base)
         else:
             key = key_base if blob_prefix else rel
             uri = f"s3://{cfg.bucket}/{key}"
@@ -767,6 +797,7 @@ def upload_path(
         )
         blob_name = f"{dest_path}/{sample.relative_to(src).as_posix()}"
         verify_size = _safe_size(sample)
+        verify_remote_tree(cfg, src, dest_path)
     else:
         blob_name = rel
         _azure_upload_blob(
