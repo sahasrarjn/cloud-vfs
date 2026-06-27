@@ -10,7 +10,9 @@ reconcile detects missing blobs).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import tempfile
@@ -91,6 +93,14 @@ class _Project(unittest.TestCase):
         kw.update(over)
         return cmd_reconcile(**kw)
 
+    def _reconcile_types(self) -> tuple[int, set[str]]:
+        """Run reconcile in JSON mode and return (rc, set-of-drift-types)."""
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = self._reconcile(as_json=True)
+        payload = json.loads(buf.getvalue() or "[]")
+        return rc, {issue["type"] for issue in payload}
+
 
 class FileRoundTripTests(_Project):
     def test_offload_then_ensure_restores_identical_bytes(self) -> None:
@@ -145,8 +155,9 @@ class FileRoundTripTests(_Project):
 
             # Remote blob disappears (the exact data-loss aftermath).
             s3.delete_prefix(rel)
-            buf_rc = self._reconcile()
-        self.assertEqual(buf_rc, 1)
+            rc, types = self._reconcile_types()
+        self.assertEqual(rc, 1)
+        self.assertIn("ghost-index", types)
 
     def test_reconcile_unverifiable_is_not_ghost(self) -> None:
         """Degraded creds/network must not be reported as a missing blob."""
@@ -162,10 +173,15 @@ class FileRoundTripTests(_Project):
         def denied(cmd, *, action, **kwargs):
             raise CloudStorageError(action, list(cmd), "An error occurred (403) ... Forbidden", 254)
 
+        buf = io.StringIO()
         with patch("cloud_vfs.storage.backends._run", side_effect=denied):
-            rc = self._reconcile(as_json=True)
-        # Still reports drift (rc 1) but as blob-unverifiable, never ghost-index.
+            with contextlib.redirect_stdout(buf):
+                rc = self._reconcile(as_json=True)
+        types = {issue["type"] for issue in json.loads(buf.getvalue() or "[]")}
+        # Still reports drift (rc 1) but as blob-unverifiable, never a false missing.
         self.assertEqual(rc, 1)
+        self.assertIn("blob-unverifiable", types)
+        self.assertNotIn("ghost-index", types)
 
 
 class DirectoryRoundTripTests(_Project):
