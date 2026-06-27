@@ -6,7 +6,8 @@ cloud-vfs is **not** a full filesystem. It is a **manual, path-keyed** layer ove
 
 | Idea | Command / behavior |
 |------|-------------------|
-| **fsck** | `reconcile`, `reconcile --from-blob`, `reconcile --repair-stubs` |
+| **fsck** | `reconcile` (HEADs every inventory blob by default), `reconcile --from-blob` (also reverse-scans for orphans), `reconcile --repair-stubs` |
+| **fsync / verify write** | `offload` HEADs the uploaded object (exists + size) before deleting local; a missing/mismatched remote keeps the local file and fails loudly |
 | **fsync / verify read** | `ensure` verifies sha256 vs inventory (use `--no-verify` to skip) |
 | **lost+found** | `reconcile --orphan-blobs` lists unindexed blobs in **cloud-vfs bucket only** |
 | **safe unlink** | `guard <path>` blocks deleting real local bytes unless cloud-vfs says cloud-only |

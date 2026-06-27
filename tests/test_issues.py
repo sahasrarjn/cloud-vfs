@@ -198,8 +198,11 @@ class IssueFixTests(unittest.TestCase):
         progress["uploaded"] = True
         save_offload_progress(progress)
 
+        # Resuming past the upload checkpoint still verifies the remote object
+        # exists before deleting local (issue #38 verify-before-delete).
         with patch("cloud_vfs.cli.upload_path", side_effect=fake_upload):
-            rc = cmd_offload([rel], dry_run=False, archive_override=None, delete_local=True)
+            with patch("cloud_vfs.cli.blob_content_length", return_value=len(b"resume-payload")):
+                rc = cmd_offload([rel], dry_run=False, archive_override=None, delete_local=True)
 
         self.assertEqual(rc, 0)
         self.assertEqual(upload_calls, [])

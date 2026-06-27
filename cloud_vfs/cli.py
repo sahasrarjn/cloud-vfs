@@ -25,7 +25,13 @@ from cloud_vfs.storage.env import (
     source_target_hints,
 )
 from cloud_vfs.storage.errors import CloudStorageError, CloudVfsError, PathOutsideProjectError
-from cloud_vfs.storage.fetch import fetch_path, manifest_with_provider, resolve_archive, upload_path
+from cloud_vfs.storage.fetch import (
+    ArchiveConfig,
+    fetch_path,
+    manifest_with_provider,
+    resolve_archive,
+    upload_path,
+)
 from cloud_vfs.storage.inventory import (
     detect_drift,
     find_row,
@@ -59,6 +65,7 @@ from cloud_vfs.storage.backends import (
     blob_content_length,
     blob_matches_local_size,
     choose_azure_transport,
+    list_blob_keys,
 )
 from cloud_vfs.storage.offload_job import (
     STATUS_FAILED,
@@ -760,6 +767,52 @@ def _offload_batch_exit(
     return 1 if path_failures else 0
 
 
+def _assert_remote_before_delete(
+    cfg: ArchiveConfig,
+    meta: dict[str, Any],
+    rel: str,
+    *,
+    is_dir: bool,
+    local_size: int | None,
+) -> None:
+    """Confirm the remote copy exists before the local source is deleted.
+
+    This is the last line of defense against issue #37: even on a resumed run
+    that skips the upload step (so ``upload_path``'s own verification never
+    runs), we HEAD the blob here and refuse to write the stub / delete local if
+    the object is missing or the wrong size.
+    """
+    if is_dir:
+        prefix = meta.get("blob_prefix") or (rel.rstrip("/") + "/")
+        if not list_blob_keys(cfg, prefix):
+            raise CloudStorageError(
+                f"verify {cfg.provider}://{cfg.bucket}/{prefix}",
+                [],
+                "refusing to delete local — no remote objects found under blob "
+                f"prefix '{prefix}' (upload appears to have produced nothing)",
+                1,
+            )
+        return
+    blob = meta.get("blob") or rel
+    remote_size = blob_content_length(cfg, blob)
+    if remote_size is None:
+        raise CloudStorageError(
+            f"verify {cfg.provider}://{cfg.bucket}/{blob}",
+            [],
+            f"refusing to delete local — remote object '{blob}' is missing "
+            "(upload reported success but nothing landed in the bucket)",
+            1,
+        )
+    if local_size is not None and remote_size != local_size:
+        raise CloudStorageError(
+            f"verify {cfg.provider}://{cfg.bucket}/{blob}",
+            [],
+            f"refusing to delete local — remote object '{blob}' is "
+            f"{remote_size} bytes but local source is {local_size} bytes",
+            1,
+        )
+
+
 def cmd_offload(
     paths: list[str],
     *,
@@ -982,6 +1035,11 @@ def cmd_offload(
             with _offload_interrupt_guard(manifest, progress) as guard:
                 interrupt = guard
                 manifest_dirty = False
+                # True once the remote copy has been confirmed this run — either by
+                # blob_matches_local_size (size-equal HEAD) or by upload_path's own
+                # post-upload verification. A resumed run that skips upload leaves
+                # this False, so the pre-delete guard re-verifies before deleting.
+                verified_this_run = False
                 if not progress.get("uploaded"):
                     blob_key = rel if src.is_file() else None
                     if (
@@ -996,6 +1054,7 @@ def cmd_offload(
                         )
                         progress["uploaded"] = True
                         save_offload_progress(progress)
+                        verified_this_run = True
                     else:
                         print(
                             f"offload: {rel} -> {cfg.provider}/{use_archive} "
@@ -1011,6 +1070,7 @@ def cmd_offload(
                         )
                         progress["uploaded"] = True
                         save_offload_progress(progress)
+                        verified_this_run = True
                         if src.is_file():
                             file_rel = normalize_rel(rel)
                             digest = precomputed.get(file_rel) or precomputed.get(rel)
@@ -1083,6 +1143,10 @@ def cmd_offload(
                     )
 
                 if delete_local and not progress.get("stubbed"):
+                    if not verified_this_run:
+                        _assert_remote_before_delete(
+                            cfg, meta, rel, is_dir=src.is_dir(), local_size=size
+                        )
                     mark_offloaded(entry)
                     if src.is_dir():
                         _write_dir_stub_after_upload(rel, meta)
@@ -1160,6 +1224,7 @@ def cmd_reconcile(
     repair_stubs_flag: bool,
     orphan_blobs: bool,
     prefix: str | None,
+    verify_blobs: bool = True,
 ) -> int:
     try:
         load_manifest()
@@ -1198,12 +1263,13 @@ def cmd_reconcile(
             return 1
         print(f"Rebuilt index: {added} row(s) under {prefix}")
         return 0
-    issues = detect_drift(check_blob=from_blob)
+    issues = detect_drift(check_blob=from_blob, verify_blobs=verify_blobs)
     if as_json:
         print(json.dumps(issues, indent=2))
     else:
         if not issues:
-            print("No drift detected.")
+            scope = "disk + inventory" if not verify_blobs else "disk + inventory + remote blobs"
+            print(f"No drift detected ({scope}).")
         else:
             print(f"{len(issues)} drift issue(s):")
             for issue in issues:
@@ -1356,7 +1422,16 @@ def main(argv: list[str] | None = None) -> int:
 
     p_reconcile = sub.add_parser("reconcile", help="Audit disk vs inventory vs blob")
     p_reconcile.add_argument("--json", action="store_true")
-    p_reconcile.add_argument("--from-blob", action="store_true", help="Check blob existence")
+    p_reconcile.add_argument(
+        "--from-blob",
+        action="store_true",
+        help="Also reverse-scan the bucket for unregistered/orphan blobs (slower)",
+    )
+    p_reconcile.add_argument(
+        "--no-verify-blobs",
+        action="store_true",
+        help="Skip the remote HEAD check of each inventory blob (faster, offline)",
+    )
     p_reconcile.add_argument("--fix-index", action="store_true", help="Rebuild index from blob listing")
     p_reconcile.add_argument("--prefix", help="Prefix for --fix-index")
     p_reconcile.add_argument(
@@ -1579,6 +1654,7 @@ def main(argv: list[str] | None = None) -> int:
             repair_stubs_flag=args.repair_stubs,
             orphan_blobs=args.orphan_blobs,
             prefix=args.prefix,
+            verify_blobs=not args.no_verify_blobs,
         )
     if args.cmd == "guard":
         return cmd_guard(args.paths, as_json=args.json)
